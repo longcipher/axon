@@ -1,0 +1,41 @@
+[Unit]
+Description=Axon API Gateway
+Documentation=https://github.com/your-org/axon
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=axon
+Group=axon
+ExecStart=/usr/local/bin/axon --config /etc/axon/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartSec=5s
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/axon
+ReadOnlyPaths=/etc/axon
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=32768
+
+# Environment variables
+Environment=RUST_LOG=info
+Environment=RUST_BACKTRACE=1
+
+# Working directory
+WorkingDirectory=/var/lib/axon
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
