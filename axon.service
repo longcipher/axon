@@ -1,13 +1,12 @@
 [Unit]
 Description=Axon API Gateway
-Documentation=https://github.com/your-org/axon
-After=network.target
-Wants=network.target
+Wants=syslog.target network-online.target
+After=network.target network-online.target
 
 [Service]
 Type=simple
-User=axon
-Group=axon
+User=akagi201
+Group=akagi201
 ExecStart=/usr/local/bin/axon --config /etc/axon/config.yaml
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=process
