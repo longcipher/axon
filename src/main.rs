@@ -339,7 +339,7 @@ async fn main() -> Result<()> {
     use axon::{adapters::HttpHandler, utils::ConnectionTracker};
 
     let connection_tracker = Arc::new(ConnectionTracker::new());
-    let _http_handler = HttpHandler::new(
+    let http_handler = Arc::new(HttpHandler::new(
         gateway_service_holder
             .read()
             .map_err(|e| eyre!("Failed to acquire gateway service read lock: {}", e))?
@@ -348,7 +348,7 @@ async fn main() -> Result<()> {
         file_system.clone(),
         connection_tracker.clone(),
         config_holder.clone(),
-    );
+    ));
 
     // Simple server that binds to the configured address
     let addr: SocketAddr = {
@@ -361,16 +361,13 @@ async fn main() -> Result<()> {
             .context("Failed to parse listen address")?
     };
 
-    // Log initial routes from the config_holder
+    // Show configuration info
     {
         let ch = config_holder
             .read()
-            .map_err(|e| eyre!("Failed to acquire config read lock for logging: {}", e))?;
-        for (prefix, route) in &ch.routes {
-            tracing::info!("Configured route: {} -> {:?}", prefix, route);
-        }
-
+            .map_err(|e| eyre!("Failed to acquire config read lock: {}", e))?;
         let protocols = &ch.protocols;
+
         tracing::info!(
             "Starting Axon API Gateway on {} (TLS enabled: {}, HTTP/2: {}, WebSocket: {})",
             ch.listen_addr,
@@ -388,28 +385,84 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Create a basic axum router and run it
-    use axum::{Router, extract::Request, routing::any};
-    let app = Router::new().route(
-        "/*path",
-        any(|_req: Request| async move {
-            // This is a placeholder - would need to integrate with HttpHandler properly
-            axum::response::Response::builder()
-                .status(200)
-                .body("Axon Gateway - Basic HTTP server running".to_string())
-                .expect("Failed to build basic HTTP response")
-        }),
-    );
+    // Create Axum router with real request handling
+    use std::convert::Infallible;
+
+    use axum::{
+        Router,
+        body::Body,
+        extract::{ConnectInfo, Request},
+        response::Response,
+        routing::any,
+    };
+
+    let handler = http_handler.clone();
+    let app = Router::new()
+        .route(
+            "/{*path}",
+            any(
+                move |ConnectInfo(addr): ConnectInfo<SocketAddr>, req: Request| {
+                    let handler = handler.clone();
+                    async move {
+                        match handler.handle_request(req, Some(addr)).await {
+                            Ok(response) => Ok::<Response<Body>, Infallible>(response),
+                            Err(e) => {
+                                tracing::error!("Request handling error: {:?}", e);
+                                let error_response = Response::builder()
+                                    .status(500)
+                                    .body(Body::from("Internal Server Error"))
+                                    .expect("Failed to build error response");
+                                Ok(error_response)
+                            }
+                        }
+                    }
+                },
+            ),
+        )
+        .route(
+            "/",
+            any(
+                move |ConnectInfo(addr): ConnectInfo<SocketAddr>, req: Request| {
+                    let handler = http_handler.clone();
+                    async move {
+                        match handler.handle_request(req, Some(addr)).await {
+                            Ok(response) => Ok::<Response<Body>, Infallible>(response),
+                            Err(e) => {
+                                tracing::error!("Request handling error: {:?}", e);
+                                let error_response = Response::builder()
+                                    .status(500)
+                                    .body(Body::from("Internal Server Error"))
+                                    .expect("Failed to build error response");
+                                Ok(error_response)
+                            }
+                        }
+                    }
+                },
+            ),
+        );
+
+    // Log initial routes from the config_holder
+    {
+        let ch = config_holder
+            .read()
+            .map_err(|e| eyre!("Failed to acquire config read lock for logging: {}", e))?;
+        for (prefix, route) in &ch.routes {
+            tracing::info!("Configured route: {} -> {:?}", prefix, route);
+        }
+    }
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .context("Failed to bind to address")?;
 
-    tracing::info!("Basic HTTP server starting on {}", addr);
+    tracing::info!("Axon API Gateway server starting on {}", addr);
 
     // Run the server and wait for shutdown
     let server_result = tokio::select! {
-        result = axum::serve(listener, app) => {
+        result = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>()
+        ) => {
             result.context("Server error")
         },
         shutdown_reason = graceful_shutdown.wait_for_shutdown_signal() => {
