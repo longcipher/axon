@@ -56,14 +56,50 @@ impl HttpHandler {
 
         tracing::info!("Handling {} request to {}", method, path);
 
-        // Handle special paths
+        // Handle special paths first
         match path {
-            "/health" => self.handle_health_check().await,
-            "/metrics" => self.handle_metrics().await,
-            "/status" => self.handle_status().await,
-            _ if path.starts_with("/static/") => self.handle_static_file(req).await,
-            _ => self.handle_proxy_request(req, client_addr).await,
+            "/health" => return self.handle_health_check().await,
+            "/metrics" => return self.handle_metrics().await,
+            "/status" => return self.handle_status().await,
+            _ => {}
         }
+
+        // Check if there's a matching route in configuration
+        if let Some((prefix, route_config)) = self.gateway_service.find_matching_route(path) {
+            tracing::info!(
+                "Matched route: prefix='{}', config={:?}",
+                prefix,
+                route_config
+            );
+            match route_config {
+                RouteConfig::Static { .. } => {
+                    tracing::info!("Handling as static file route");
+                    return self.handle_static_file(req, &prefix).await;
+                }
+                RouteConfig::Proxy { .. }
+                | RouteConfig::LoadBalance { .. }
+                | RouteConfig::Websocket { .. } => {
+                    tracing::info!("Handling as proxy/load balance/websocket route");
+                    return self.handle_proxy_request(req, client_addr).await;
+                }
+                RouteConfig::Redirect {
+                    target,
+                    status_code,
+                    ..
+                } => {
+                    tracing::info!("Handling as redirect route");
+                    return self.handle_redirect(&target, &status_code).await;
+                }
+            }
+        } else {
+            tracing::warn!("No matching route found for path: {}", path);
+        }
+
+        // If no route matches, return 404
+        Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(AxumBody::from("Route not found"))
+            .wrap_err("Failed to build 404 response")
     }
 
     /// Handle health check endpoint
@@ -174,6 +210,7 @@ impl HttpHandler {
     async fn handle_static_file(
         &self,
         req: Request<AxumBody>,
+        route_prefix: &str,
     ) -> Result<Response<AxumBody>, eyre::Error> {
         let path = req.uri().path().to_string();
 
@@ -181,7 +218,8 @@ impl HttpHandler {
         if let Some((_, RouteConfig::Static { root, .. })) =
             self.gateway_service.find_matching_route(&path)
         {
-            let file_path = path.strip_prefix("/static/").unwrap_or(&path);
+            // Extract the file path by removing the route prefix
+            let file_path = path.strip_prefix(route_prefix).unwrap_or(&path);
 
             // Security check: prevent path traversal
             if file_path.contains("..") {
@@ -197,7 +235,7 @@ impl HttpHandler {
                     tracing::warn!("Failed to serve static file {}: {}", file_path, e);
                     return Response::builder()
                         .status(StatusCode::NOT_FOUND)
-                        .body(AxumBody::from("File not found"))
+                        .body(AxumBody::from("File or directory not found"))
                         .wrap_err("Failed to build 404 response");
                 }
             }
@@ -208,6 +246,27 @@ impl HttpHandler {
             .status(StatusCode::NOT_FOUND)
             .body(AxumBody::from("Static route not found"))
             .wrap_err("Failed to build 404 response")
+    }
+
+    /// Handle redirect requests
+    async fn handle_redirect(
+        &self,
+        target: &str,
+        status_code: &Option<u16>,
+    ) -> Result<Response<AxumBody>, eyre::Error> {
+        let status = match status_code {
+            Some(code) => StatusCode::from_u16(*code)
+                .map_err(|_| eyre::eyre!("Invalid status code: {}", code))?,
+            None => StatusCode::FOUND, // 302 by default
+        };
+
+        let response = Response::builder()
+            .status(status)
+            .header(header::LOCATION, target)
+            .body(AxumBody::empty())
+            .wrap_err("Failed to build redirect response")?;
+
+        Ok(response)
     }
 
     /// Handle proxy requests to backend services
@@ -243,15 +302,23 @@ impl HttpHandler {
         let path = req.uri().path();
 
         // Find the matching route configuration
-        let (_, route_config) = self
+        let (route_prefix, route_config) = self
             .gateway_service
             .find_matching_route(path)
             .ok_or_else(|| eyre::eyre!("No matching route found for path: {}", path))?;
 
-        // Get targets from the route configuration
-        let targets = match &route_config {
-            RouteConfig::Proxy { target, .. } => vec![target.clone()],
-            RouteConfig::LoadBalance { targets, .. } => targets.clone(),
+        // Get targets and path rewrite from the route configuration
+        let (targets, path_rewrite) = match &route_config {
+            RouteConfig::Proxy {
+                target,
+                path_rewrite,
+                ..
+            } => (vec![target.clone()], path_rewrite.as_ref()),
+            RouteConfig::LoadBalance {
+                targets,
+                path_rewrite,
+                ..
+            } => (targets.clone(), path_rewrite.as_ref()),
             _ => return Err(eyre::eyre!("Route is not a proxy or load balance route")),
         };
 
@@ -261,13 +328,32 @@ impl HttpHandler {
             .select_backend(&targets)
             .ok_or_else(|| eyre::eyre!("No healthy backends available"))?;
 
-        // Modify request URI to point to the selected backend
+        // Handle path rewriting
         let original_uri = req.uri().clone();
-        let backend_uri = format!(
-            "{}{}",
-            backend,
-            original_uri.path_and_query().map_or("", |pq| pq.as_str())
-        );
+        let rewritten_path = if let Some(rewrite) = path_rewrite {
+            // Strip the route prefix and prepend the rewrite path
+            let remaining_path = path.strip_prefix(&route_prefix).unwrap_or(path);
+            if remaining_path.is_empty() {
+                rewrite.to_string()
+            } else {
+                format!("{}/{}", rewrite.trim_end_matches('/'), remaining_path)
+            }
+        } else {
+            // No rewrite, use original path
+            original_uri.path().to_string()
+        };
+
+        // Construct the backend URI with the rewritten path
+        let backend_uri = if let Some(query) = original_uri.query() {
+            format!(
+                "{}{}?{}",
+                backend.trim_end_matches('/'),
+                rewritten_path,
+                query
+            )
+        } else {
+            format!("{}{}", backend.trim_end_matches('/'), rewritten_path)
+        };
 
         *req.uri_mut() = backend_uri
             .parse()
