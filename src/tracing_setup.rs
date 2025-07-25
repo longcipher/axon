@@ -1,25 +1,48 @@
+use std::io::IsTerminal;
+
 use eyre::{Result, WrapErr};
 use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt, util::SubscriberInitExt};
 
-/// Initialize structured logging with JSON output for Axon
+/// Initialize structured logging with automatic format detection
+/// Uses human-friendly format for terminal output, JSON for non-terminal
 pub fn init_tracing() -> Result<()> {
-    tracing::info!("Initializing Axon structured logging with JSON output");
+    let is_terminal = std::io::stderr().is_terminal();
 
-    Registry::default()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .with(
-            tracing_subscriber::fmt::layer()
-                .json()
-                .with_current_span(false)
-                .with_span_list(true)
-                .with_target(true)
-                .with_thread_ids(true)
-                .with_file(true)
-                .with_line_number(true),
-        )
-        .init();
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-    tracing::info!("Axon structured logging initialized successfully");
+    if is_terminal {
+        // Terminal output: human-friendly, compact format
+        Registry::default()
+            .with(env_filter)
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .compact()
+                    .with_target(false)
+                    .with_thread_ids(false)
+                    .with_file(false)
+                    .with_line_number(false)
+                    .with_ansi(true),
+            )
+            .init();
+        tracing::info!("🚀 Axon logging initialized (terminal mode)");
+    } else {
+        // Non-terminal: structured JSON format for log aggregation
+        Registry::default()
+            .with(env_filter)
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_current_span(false)
+                    .with_span_list(false)
+                    .with_target(true)
+                    .with_thread_ids(false)
+                    .with_file(false)
+                    .with_line_number(false),
+            )
+            .init();
+        tracing::info!("Axon logging initialized (JSON mode)");
+    }
+
     Ok(())
 }
 
@@ -95,15 +118,26 @@ pub fn configure_component_tracing(component: &str) -> tracing::Span {
     tracing::info_span!("component", name = component)
 }
 
-/// Create a request-scoped tracing span
-pub fn create_request_span(method: &str, path: &str, request_id: &str) -> tracing::Span {
+/// Create a request-scoped tracing span with comprehensive request info
+pub fn create_request_span(
+    method: &str,
+    path: &str,
+    request_id: &str,
+    client_ip: Option<&str>,
+    user_agent: Option<&str>,
+) -> tracing::Span {
     tracing::info_span!(
         "request",
         http.method = method,
         http.path = path,
         request.id = request_id,
+        client.ip = client_ip,
+        http.user_agent = user_agent,
         http.status_code = tracing::field::Empty,
+        backend.url = tracing::field::Empty,
         duration_ms = tracing::field::Empty,
+        bytes_sent = tracing::field::Empty,
+        bytes_received = tracing::field::Empty,
     )
 }
 
@@ -131,19 +165,34 @@ mod tests {
 
     #[test]
     fn test_create_request_span() {
-        let span = create_request_span("GET", "/api/test", "req-123");
-        assert_eq!(span.metadata().name(), "request");
+        let span = create_request_span(
+            "GET",
+            "/api/test",
+            "req-123",
+            Some("192.168.1.1"),
+            Some("curl/7.68.0"),
+        );
+        assert_eq!(
+            span.metadata().expect("Should have metadata").name(),
+            "request"
+        );
     }
 
     #[test]
     fn test_create_backend_span() {
         let span = create_backend_span("http://backend", "POST", "/data");
-        assert_eq!(span.metadata().name(), "backend_request");
+        assert_eq!(
+            span.metadata().expect("Should have metadata").name(),
+            "backend_request"
+        );
     }
 
     #[test]
     fn test_configure_component_tracing() {
         let span = configure_component_tracing("health_checker");
-        assert_eq!(span.metadata().name(), "component");
+        assert_eq!(
+            span.metadata().expect("Should have metadata").name(),
+            "component"
+        );
     }
 }

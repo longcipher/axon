@@ -174,6 +174,23 @@ impl ServerConfig {
     }
 }
 
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            listen_addr: "127.0.0.1:8080".to_string(),
+            host: None,
+            port: None,
+            routes: HashMap::new(),
+            tls: None,
+            health_check: HealthCheckConfig::default(),
+            backend_health_paths: HashMap::new(),
+            protocols: ProtocolConfig::default(),
+            static_files: None,
+            http1_enabled: true,
+        }
+    }
+}
+
 /// Builder for ServerConfig to allow for cleaner configuration creation
 pub struct ServerConfigBuilder {
     listen_addr: Option<String>,

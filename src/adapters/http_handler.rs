@@ -1,6 +1,7 @@
 use std::{
     net::SocketAddr,
     sync::{Arc, RwLock},
+    time::Instant,
 };
 
 use axum::{
@@ -9,12 +10,15 @@ use axum::{
 };
 use eyre::{Result, WrapErr};
 use hyper::{Request, Response};
+use tracing::Instrument;
+use uuid::Uuid;
 
 use crate::{
     adapters::FileSystemAdapter,
     config::models::{RouteConfig, ServerConfig},
     core::GatewayService,
     ports::{file_system::FileSystem, http_client::HttpClient},
+    tracing_setup,
     utils::ConnectionTracker,
 };
 
@@ -50,11 +54,69 @@ impl HttpHandler {
         req: Request<AxumBody>,
         client_addr: Option<SocketAddr>,
     ) -> Result<Response<AxumBody>, eyre::Error> {
+        let start_time = Instant::now();
         let method = req.method().clone();
         let uri = req.uri().clone();
         let path = uri.path();
+        let request_id = Uuid::new_v4().to_string();
 
-        tracing::info!("Handling {} request to {}", method, path);
+        // Extract client info for logging
+        let client_ip = client_addr.map(|addr| addr.ip().to_string());
+        let user_agent = req
+            .headers()
+            .get(header::USER_AGENT)
+            .and_then(|h| h.to_str().ok())
+            .map(String::from);
+
+        // Create request span with comprehensive info
+        let span = tracing_setup::create_request_span(
+            method.as_str(),
+            path,
+            &request_id,
+            client_ip.as_deref(),
+            user_agent.as_deref(),
+        );
+
+        let result: Result<Response<AxumBody>, eyre::Error> =
+            async { self.route_request(req, client_addr).await }
+                .instrument(span)
+                .await;
+
+        // Log request completion with timing and outcome
+        let duration = start_time.elapsed();
+        match &result {
+            Ok(response) => {
+                tracing::Span::current().record("http.status_code", response.status().as_u16());
+                tracing::Span::current().record("duration_ms", duration.as_millis() as u64);
+
+                tracing::info!(
+                    status = response.status().as_u16(),
+                    duration_ms = duration.as_millis(),
+                    "request completed"
+                );
+            }
+            Err(e) => {
+                tracing::Span::current().record("http.status_code", 500u16);
+                tracing::Span::current().record("duration_ms", duration.as_millis() as u64);
+
+                tracing::error!(
+                    error = %e,
+                    duration_ms = duration.as_millis(),
+                    "request failed"
+                );
+            }
+        }
+
+        result
+    }
+
+    /// Route request to appropriate handler
+    async fn route_request(
+        &self,
+        req: Request<AxumBody>,
+        client_addr: Option<SocketAddr>,
+    ) -> Result<Response<AxumBody>, eyre::Error> {
+        let path = req.uri().path();
 
         // Handle special paths first
         match path {
@@ -66,20 +128,22 @@ impl HttpHandler {
 
         // Check if there's a matching route in configuration
         if let Some((prefix, route_config)) = self.gateway_service.find_matching_route(path) {
-            tracing::info!(
-                "Matched route: prefix='{}', config={:?}",
-                prefix,
-                route_config
-            );
+            tracing::Span::current().record("route.prefix", &prefix);
+
             match route_config {
                 RouteConfig::Static { .. } => {
-                    tracing::info!("Handling as static file route");
                     return self.handle_static_file(req, &prefix).await;
                 }
-                RouteConfig::Proxy { .. }
-                | RouteConfig::LoadBalance { .. }
-                | RouteConfig::Websocket { .. } => {
-                    tracing::info!("Handling as proxy/load balance/websocket route");
+                RouteConfig::Proxy { target, .. } => {
+                    tracing::Span::current().record("backend.url", target);
+                    return self.handle_proxy_request(req, client_addr).await;
+                }
+                RouteConfig::LoadBalance { targets, .. } => {
+                    let target_list = targets.join(",");
+                    tracing::Span::current().record("backend.targets", &target_list);
+                    return self.handle_proxy_request(req, client_addr).await;
+                }
+                RouteConfig::Websocket { .. } => {
                     return self.handle_proxy_request(req, client_addr).await;
                 }
                 RouteConfig::Redirect {
@@ -87,12 +151,11 @@ impl HttpHandler {
                     status_code,
                     ..
                 } => {
-                    tracing::info!("Handling as redirect route");
                     return self.handle_redirect(&target, &status_code).await;
                 }
             }
         } else {
-            tracing::warn!("No matching route found for path: {}", path);
+            tracing::warn!("no route match");
         }
 
         // If no route matches, return 404
@@ -232,7 +295,7 @@ impl HttpHandler {
             match self.file_system.serve_file(&root, file_path, req).await {
                 Ok(response) => return Ok(response),
                 Err(e) => {
-                    tracing::warn!("Failed to serve static file {}: {}", file_path, e);
+                    tracing::warn!(error = %e, path = file_path, "static file not found");
                     return Response::builder()
                         .status(StatusCode::NOT_FOUND)
                         .body(AxumBody::from("File or directory not found"))
@@ -328,6 +391,9 @@ impl HttpHandler {
             .select_backend(&targets)
             .ok_or_else(|| eyre::eyre!("No healthy backends available"))?;
 
+        // Record selected backend in span
+        tracing::Span::current().record("backend.url", &backend);
+
         // Handle path rewriting
         let original_uri = req.uri().clone();
         let rewritten_path = if let Some(rewrite) = path_rewrite {
@@ -385,10 +451,24 @@ impl HttpHandler {
         );
 
         // Send request to backend
+        let backend_start = Instant::now();
         match self.http_client.send_request(req).await {
-            Ok(response) => Ok(response),
+            Ok(response) => {
+                let backend_duration = backend_start.elapsed();
+                tracing::info!(
+                    backend_status = response.status().as_u16(),
+                    backend_duration_ms = backend_duration.as_millis(),
+                    "backend response"
+                );
+                Ok(response)
+            }
             Err(e) => {
-                tracing::error!("Backend request failed: {}", e);
+                let backend_duration = backend_start.elapsed();
+                tracing::error!(
+                    error = %e,
+                    backend_duration_ms = backend_duration.as_millis(),
+                    "backend failed"
+                );
                 Ok(Response::builder()
                     .status(StatusCode::BAD_GATEWAY)
                     .body(AxumBody::from("Backend request failed"))
@@ -424,7 +504,7 @@ impl HttpHandler {
         _req: Request<AxumBody>,
     ) -> Result<Response<AxumBody>, eyre::Error> {
         // TODO: Implement WebSocket proxying
-        tracing::warn!("WebSocket upgrade requested but not yet implemented");
+        tracing::warn!("websocket not implemented");
 
         Response::builder()
             .status(StatusCode::NOT_IMPLEMENTED)
