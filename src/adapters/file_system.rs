@@ -39,8 +39,9 @@ impl FileSystem for FileSystemAdapter {
         let mut new_req = Request::from_parts(parts, body);
         *new_req.uri_mut() = uri;
 
-        // Use ServeDir from tower-http
-        let serve_dir = ServeDir::new(&root);
+        // Use ServeDir from tower-http with index file support
+        let serve_dir = ServeDir::new(&root).append_index_html_on_directories(true); // 自动添加 index.html 到目录路径
+
         let response = serve_dir
             .oneshot(new_req)
             .await
