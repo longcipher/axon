@@ -67,6 +67,35 @@ impl FileSystemAdapter {
     pub async fn file_exists(&self, root: &str, path: &str) -> Result<bool, FileSystemError> {
         let full_path = std::path::Path::new(root).join(path.trim_start_matches('/'));
 
+        // Security check: ensure the resolved path is still within root
+        let canonical_root = std::fs::canonicalize(root).map_err(FileSystemError::IoError)?;
+        let canonical_path = match std::fs::canonicalize(&full_path) {
+            Ok(p) => p,
+            Err(e) => {
+                return if e.kind() == std::io::ErrorKind::NotFound {
+                    // If the path doesn't exist, treat as not found only if it would be within root
+                    // Check the parent directory canonicalization
+                    match full_path
+                        .parent()
+                        .and_then(|p| std::fs::canonicalize(p).ok())
+                    {
+                        Some(parent) if parent.starts_with(&canonical_root) => Ok(false),
+                        _ => Err(FileSystemError::InvalidPath(
+                            "Path traversal attempt detected".to_string(),
+                        )),
+                    }
+                } else {
+                    Err(FileSystemError::IoError(e))
+                };
+            }
+        };
+
+        if !canonical_path.starts_with(&canonical_root) {
+            return Err(FileSystemError::InvalidPath(
+                "Path traversal attempt detected".to_string(),
+            ));
+        }
+
         match tokio::fs::metadata(&full_path).await {
             Ok(metadata) => Ok(metadata.is_file()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),

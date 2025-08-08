@@ -152,7 +152,7 @@ pub async fn log_health_summary(gateway_service: &GatewayService, log_prefix: &s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::models::{BackendConfig, HealthCheckConfig};
+    use crate::config::models::HealthCheckConfig;
 
     fn create_test_config(enabled: bool) -> ServerConfig {
         ServerConfig {

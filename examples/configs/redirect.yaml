@@ -1,0 +1,10 @@
+# Redirect scenario
+listen_addr: "127.0.0.1:8087"
+routes:
+  "/old/":
+    type: "redirect"
+    target: "/new/"
+    status_code: 302
+  "/new/":
+    type: "static"
+    root: "examples/static"

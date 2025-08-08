@@ -176,21 +176,35 @@ pub async fn request_id_middleware(req: Request, next: Next) -> Response {
 mod tests {
     use std::collections::HashMap;
 
-    use axum::{body::Body, http::StatusCode};
+    use axum::{
+        Router,
+        body::Body,
+        http::{HeaderValue, StatusCode},
+        middleware,
+        routing::get,
+    };
+    use tower::ServiceExt; // for oneshot
 
     use super::*;
 
     #[tokio::test]
     async fn test_security_headers_middleware() {
-        let req = Request::builder().body(Body::empty()).unwrap();
-        let next = Next::new(|_: Request| async {
-            axum::response::Response::builder()
-                .status(StatusCode::OK)
-                .body(Body::empty())
-                .unwrap()
-        });
+        let app = Router::new()
+            .route(
+                "/",
+                get(|| async {
+                    axum::response::Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Body::empty())
+                        .unwrap()
+                }),
+            )
+            .layer(middleware::from_fn(security_headers_middleware));
 
-        let response = security_headers_middleware(req, next).await;
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         let headers = response.headers();
 
         assert!(headers.contains_key("X-Content-Type-Options"));
@@ -205,15 +219,26 @@ mod tests {
         custom_headers.insert("X-Custom-Header".to_string(), "custom-value".to_string());
         let custom_headers = Arc::new(custom_headers);
 
-        let req = Request::builder().body(Body::empty()).unwrap();
-        let next = Next::new(|_: Request| async {
-            axum::response::Response::builder()
-                .status(StatusCode::OK)
-                .body(Body::empty())
-                .unwrap()
-        });
+        let ch = custom_headers.clone();
+        let app = Router::new()
+            .route(
+                "/",
+                get(|| async {
+                    axum::response::Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Body::empty())
+                        .unwrap()
+                }),
+            )
+            .layer(middleware::from_fn(move |req, next| {
+                let ch = ch.clone();
+                async move { custom_headers_middleware(req, next, ch).await }
+            }));
 
-        let response = custom_headers_middleware(req, next, custom_headers).await;
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         let headers = response.headers();
 
         assert_eq!(
@@ -224,15 +249,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_id_middleware() {
-        let req = Request::builder().body(Body::empty()).unwrap();
-        let next = Next::new(|_: Request| async {
-            axum::response::Response::builder()
-                .status(StatusCode::OK)
-                .body(Body::empty())
-                .unwrap()
-        });
+        let app = Router::new()
+            .route(
+                "/",
+                get(|| async {
+                    axum::response::Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Body::empty())
+                        .unwrap()
+                }),
+            )
+            .layer(middleware::from_fn(request_id_middleware));
 
-        let response = request_id_middleware(req, next).await;
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         let headers = response.headers();
 
         assert!(headers.contains_key("X-Request-ID"));

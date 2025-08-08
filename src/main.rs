@@ -411,7 +411,9 @@ async fn main() -> Result<()> {
                                 let error_response = Response::builder()
                                     .status(500)
                                     .body(Body::from("Internal Server Error"))
-                                    .expect("Failed to build error response");
+                                    .unwrap_or_else(|_| {
+                                        Response::new(Body::from("Internal Server Error"))
+                                    });
                                 Ok(error_response)
                             }
                         }
@@ -432,7 +434,9 @@ async fn main() -> Result<()> {
                                 let error_response = Response::builder()
                                     .status(500)
                                     .body(Body::from("Internal Server Error"))
-                                    .expect("Failed to build error response");
+                                    .unwrap_or_else(|_| {
+                                        Response::new(Body::from("Internal Server Error"))
+                                    });
                                 Ok(error_response)
                             }
                         }

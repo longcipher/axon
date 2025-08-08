@@ -4,17 +4,22 @@ use scc::HashMap;
 
 use crate::{
     config::{HealthCheckConfig, HealthStatus, RouteConfig, ServerConfig},
-    core::backend::{BackendHealth, BackendUrl},
+    core::{
+        backend::{BackendHealth, BackendUrl},
+        rate_limiter::RouteRateLimiter,
+    },
 };
 
 pub struct GatewayService {
     config: Arc<ServerConfig>,
     backend_health: Arc<HashMap<String, BackendHealth>>,
+    rate_limiters: Arc<HashMap<String, RouteRateLimiter>>, // keyed by route prefix
 }
 
 impl GatewayService {
     pub fn new(config: Arc<ServerConfig>) -> Self {
         let backend_health = Arc::new(HashMap::new());
+        let rate_limiters = Arc::new(HashMap::new());
 
         let backends = Self::collect_backends(&config.routes);
 
@@ -26,14 +31,46 @@ impl GatewayService {
             }
         }
 
+        // Build route-level rate limiters
+        for (prefix, route) in &config.routes {
+            let rate_limit_cfg_opt = match route {
+                RouteConfig::Proxy { rate_limit, .. } => rate_limit,
+                RouteConfig::LoadBalance { rate_limit, .. } => rate_limit,
+                RouteConfig::Static { rate_limit, .. } => rate_limit,
+                RouteConfig::Redirect { rate_limit, .. } => rate_limit,
+                RouteConfig::Websocket { rate_limit, .. } => rate_limit,
+            };
+            if let Some(rate_cfg) = rate_limit_cfg_opt {
+                match RouteRateLimiter::new(rate_cfg) {
+                    Ok(limiter) => {
+                        let _ = rate_limiters.insert(prefix.clone(), limiter);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to create rate limiter for route '{}': {}",
+                            prefix,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
         Self {
             config,
             backend_health,
+            rate_limiters,
         }
     }
 
     pub fn backend_health(&self) -> &HashMap<String, BackendHealth> {
         &self.backend_health
+    }
+
+    /// Get a cloned route-level rate limiter for a given prefix, if configured
+    pub fn get_rate_limiter(&self, route_prefix: &str) -> Option<RouteRateLimiter> {
+        self.rate_limiters
+            .read(&route_prefix.to_string(), |_, limiter| limiter.clone())
     }
 
     pub fn collect_backends(routes: &StdHashMap<String, RouteConfig>) -> Vec<String> {

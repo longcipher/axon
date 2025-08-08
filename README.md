@@ -1,28 +1,50 @@
 # Axon API Gateway
 
+## Quick start
+
+1. Run the gateway
+  cargo run -- serve --config config.yaml
+
+## Examples and smoke tests
+
+Ready-to-run scenarios live in `examples/`:
+
+- Static files: `examples/configs/static_files.yaml` (test: `examples/scripts/static_files.sh`)
+- Single proxy: `examples/configs/proxy_single.yaml` (test: `examples/scripts/proxy_single.sh`)
+- Load balancing (round-robin): `examples/configs/load_balance_rr.yaml` (test: `examples/scripts/load_balance_rr.sh`)
+- Rate limit by IP: `examples/configs/rate_limit_ip.yaml` (test: `examples/scripts/rate_limit_ip.sh`)
+- Health checks + LB: `examples/configs/health_checks.yaml` (test: `examples/scripts/health_checks.sh`)
+- Path rewrite (proxy): `examples/configs/path_rewrite.yaml` (test: `examples/scripts/path_rewrite.sh`)
+
+Validate a config:
+
+  cargo run -- validate --config examples/configs/static_files.yaml
+
+Run a scenario (foreground):
+
+  cargo run -- serve --config examples/configs/static_files.yaml
+
+Or run a smoke test script (needs Python 3 for tiny backends where applicable):
+
+  examples/scripts/static_files.sh
+
+## Overview
+
 A high-performance API gateway and reverse proxy built in Rust, implementing hexagonal architecture for maintainability, testability, and flexibility.
 
 ## Features
 
-- **Modern Protocol Support** with complete HTTP/1.1, HTTP/2, and HTTP/3 (QUIC) implementation
-  - ✅ **HTTP/3 (QUIC)** with automatic Alt-Svc advertisement and protocol negotiation
-  - ✅ **WebSocket Support** with first-class proxying and configurable frame/message sizes
-  - ✅ **TLS Integration** with seamless certificate sharing between HTTP/2 and HTTP/3
-  - ✅ **Unified Server Architecture** supporting both TCP (HTTP/1.1, HTTP/2) and UDP (HTTP/3)
-- **Advanced Gateway Features**
-  - Static file serving with configurable directories
-  - HTTP redirects with custom status codes
-  - Load balancing (round-robin and random strategies)
-  - Path rewriting for proxy and load-balanced routes
-  - Health checking for backend services with configurable intervals
-- **Enterprise-Grade Features**
-  - Rate limiting (by IP, header, or route-wide) with multiple algorithms
-  - **Configuration Validation** with detailed error reporting and CLI validation command
-  - Real-time configuration reloading without downtime
-  - Request and Response Manipulation (Headers & Body) with conditional logic
-  - **Production-grade monitoring** with Prometheus metrics
-  - **Automatic TLS Certificate Management** with ACME/Let's Encrypt integration
-  - **Graceful Shutdown** with connection tracking and zero-downtime restarts
+- Protocols: HTTP/1.1 and HTTP/2 (via Hyper/Rustls); WebSocket proxying is planned
+- Static file serving with configurable directories
+- HTTP redirects with custom status codes
+- Load balancing (round-robin and random strategies)
+- Path rewriting for proxy and load-balanced routes
+- Health checking for backend services with configurable intervals
+- Rate limiting (by IP, header, or route-wide)
+- Configuration validation with detailed error reporting and CLI validation command
+- Live configuration reloading (file watcher)
+- Basic Prometheus-compatible metrics at `/metrics`
+- Graceful shutdown with connection tracking
 
 ## Architecture
 
@@ -36,15 +58,15 @@ Axon follows a hexagonal architecture pattern, which separates the application i
 
 Configuration is handled through the `config` crate which supports multiple formats (YAML, JSON, TOML, etc.).
 
-### Example configuration.yaml:
+### Example configuration.yaml
 
 ```yaml
 listen_addr: "127.0.0.1:3000"
 
 protocols:
   http2_enabled: true
-  websocket_enabled: true
-  http3_enabled: false
+  websocket_enabled: true # planned
+  http3_enabled: false    # not implemented yet
 
 health_check:
   enabled: true
@@ -69,7 +91,7 @@ routes:
     root: "./public"
     
   "/health":
-    type: "proxy" 
+  type: "proxy" 
     target: "http://backend-service:8080/health"
 ```
 

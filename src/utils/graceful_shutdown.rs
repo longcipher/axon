@@ -237,8 +237,6 @@ impl ShutdownToken {
 
 #[cfg(test)]
 mod tests {
-    use tokio::time::sleep;
-
     use super::*;
 
     #[tokio::test]
@@ -251,12 +249,14 @@ mod tests {
     async fn test_manual_trigger_shutdown() {
         let shutdown = GracefulShutdown::new();
 
+        // Subscribe before triggering to ensure we can receive the message
+        let mut receiver = shutdown.subscribe();
+
         // Trigger shutdown manually
         shutdown.trigger_shutdown(ShutdownReason::Graceful).unwrap();
         assert!(shutdown.is_shutdown_initiated());
 
-        // Get a receiver and check if we can receive the signal
-        let mut receiver = shutdown.subscribe();
+        // Check if we can receive the signal
         let reason = receiver.try_recv().unwrap();
         assert!(matches!(reason, ShutdownReason::Graceful));
     }

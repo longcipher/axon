@@ -134,12 +134,8 @@ impl BackendHealth {
     pub fn mark_healthy(&self) {
         // Use Release ordering for updates to ensure visibility to other threads
         self.status.store(HEALTH_STATUS_HEALTHY, Ordering::Release);
+        // Reset failure counter; do not change success counter here.
         self.consecutive_failures.store(0, Ordering::Release);
-
-        // Increment consecutive successes
-        let current = self.consecutive_successes.load(Ordering::Relaxed);
-        self.consecutive_successes
-            .store(current + 1, Ordering::Release);
         set_backend_health_status(self.target_url.as_str(), true);
     }
 
@@ -148,12 +144,8 @@ impl BackendHealth {
         // Use Release ordering for updates to ensure visibility to other threads
         self.status
             .store(HEALTH_STATUS_UNHEALTHY, Ordering::Release);
+        // Reset success counter; do not change failure counter here.
         self.consecutive_successes.store(0, Ordering::Release);
-
-        // Increment consecutive failures
-        let current = self.consecutive_failures.load(Ordering::Relaxed);
-        self.consecutive_failures
-            .store(current + 1, Ordering::Release);
         set_backend_health_status(self.target_url.as_str(), false);
     }
 
@@ -220,7 +212,8 @@ mod tests {
 
         health.mark_unhealthy();
         assert_eq!(health.status(), HealthStatus::Unhealthy);
-        assert_eq!(health.consecutive_failures(), 1);
+        // mark_unhealthy should not change counters besides resetting successes
+        assert_eq!(health.consecutive_failures(), 0);
         assert_eq!(health.consecutive_successes(), 0);
     }
 
@@ -231,12 +224,14 @@ mod tests {
 
         // First mark as unhealthy
         health.mark_unhealthy();
-        assert_eq!(health.consecutive_failures(), 1);
+        // mark_unhealthy does not increment counters
+        assert_eq!(health.consecutive_failures(), 0);
 
         // Then mark as healthy
         health.mark_healthy();
         assert_eq!(health.status(), HealthStatus::Healthy);
-        assert_eq!(health.consecutive_successes(), 1);
+        // mark_healthy should not change counters besides resetting failures
+        assert_eq!(health.consecutive_successes(), 0);
         assert_eq!(health.consecutive_failures(), 0);
     }
 }

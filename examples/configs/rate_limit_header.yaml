@@ -1,0 +1,14 @@
+# Rate limit by header scenario
+listen_addr: "127.0.0.1:8085"
+health_check:
+  enabled: false
+routes:
+  "/api/":
+    type: "static"
+    root: "examples/static"
+    rate_limit:
+      by: header
+      header_name: "X-Api-Key"
+      requests: 2
+      period: "2s"
+      on_missing_key: deny

@@ -1,0 +1,8 @@
+# Metrics exposure scenario
+listen_addr: "127.0.0.1:8088"
+health_check:
+  enabled: false
+routes:
+  "/static/":
+    type: "static"
+    root: "examples/static"

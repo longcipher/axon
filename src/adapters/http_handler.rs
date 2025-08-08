@@ -130,6 +130,13 @@ impl HttpHandler {
         if let Some((prefix, route_config)) = self.gateway_service.find_matching_route(path) {
             tracing::Span::current().record("route.prefix", &prefix);
 
+            // Apply route-level rate limiting if configured
+            if let Some(limiter) = self.gateway_service.get_rate_limiter(&prefix)
+                && let Err(resp) = limiter.check(&req)
+            {
+                return Ok(*resp);
+            }
+
             match route_config {
                 RouteConfig::Static { .. } => {
                     return self.handle_static_file(req, &prefix).await;
@@ -201,23 +208,35 @@ impl HttpHandler {
 
     /// Handle metrics endpoint
     async fn handle_metrics(&self) -> Result<Response<AxumBody>, eyre::Error> {
-        // TODO: Implement proper metrics collection
-        let metrics_data = serde_json::json!({
-            "connections": {
-                "active": self.connection_tracker.active_connection_count(),
-                "total_requests": self.connection_tracker.total_active_requests()
-            },
-            "backends": {
-                "total": self.gateway_service.backend_count(),
-                "healthy": self.gateway_service.healthy_backend_count()
-            },
-            "timestamp": chrono::Utc::now().to_rfc3339()
-        });
+        // Minimal Prometheus-compatible text exposition for built-in gauges
+        use crate::metrics::{
+            AXON_ACTIVE_CONNECTIONS, AXON_ACTIVE_REQUESTS, get_current_metrics, init_metrics,
+        };
+        let _ = init_metrics(); // idempotent
+
+        let mut out = String::new();
+        let active_conns = self.connection_tracker.active_connection_count();
+        let active_reqs = self.connection_tracker.total_active_requests();
+        out.push_str(&format!(
+            "# HELP {AXON_ACTIVE_CONNECTIONS} Number of currently active connections to the gateway.\n"
+        ));
+        out.push_str(&format!("# TYPE {AXON_ACTIVE_CONNECTIONS} gauge\n"));
+        out.push_str(&format!("{AXON_ACTIVE_CONNECTIONS} {active_conns}\n"));
+        out.push_str(&format!(
+            "# HELP {AXON_ACTIVE_REQUESTS} Number of currently active requests being processed.\n"
+        ));
+        out.push_str(&format!("# TYPE {AXON_ACTIVE_REQUESTS} gauge\n"));
+        out.push_str(&format!("{AXON_ACTIVE_REQUESTS} {active_reqs}\n"));
+
+        for (k, v) in get_current_metrics() {
+            let metric_name = k.replace(['/', ':'], "_");
+            out.push_str(&format!("{metric_name} {v}\n"));
+        }
 
         let response = Response::builder()
             .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(AxumBody::from(metrics_data.to_string()))
+            .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
+            .body(AxumBody::from(out))
             .wrap_err("Failed to build metrics response")?;
 
         Ok(response)
@@ -435,12 +454,14 @@ impl HttpHandler {
                     .map_err(|e| eyre::eyre!("Failed to parse client IP: {}", e))?,
             );
         }
+        // Best-effort forwarded proto based on URI scheme
+        let fwd_proto = original_uri.scheme_str().unwrap_or("http");
         headers.insert(
             "X-Forwarded-Proto",
-            "http"
+            fwd_proto
                 .parse()
                 .map_err(|e| eyre::eyre!("Failed to parse protocol: {}", e))?,
-        ); // TODO: Use actual protocol
+        );
         headers.insert(
             "X-Forwarded-Host",
             original_uri
@@ -533,8 +554,8 @@ mod tests {
     fn create_test_handler() -> HttpHandler {
         let config = Arc::new(ServerConfig::default());
         let gateway_service = Arc::new(GatewayService::new(config.clone()));
-        let http_client =
-            Arc::new(crate::adapters::HttpClientAdapter::new().unwrap()) as Arc<dyn HttpClient>;
+        let http_client = Arc::new(crate::adapters::HttpClientAdapter::new().expect("client"))
+            as Arc<dyn HttpClient>;
         let file_system = Arc::new(FileSystemAdapter::new());
         let connection_tracker = Arc::new(ConnectionTracker::new());
         let config_holder = Arc::new(RwLock::new(config));
@@ -554,7 +575,7 @@ mod tests {
         let result = handler.handle_health_check().await;
 
         assert!(result.is_ok());
-        let response = result.unwrap();
+        let response = result.expect("health ok");
         assert_eq!(response.status(), StatusCode::NOT_FOUND); // No backends configured
     }
 
@@ -564,11 +585,11 @@ mod tests {
         let result = handler.handle_metrics().await;
 
         assert!(result.is_ok());
-        let response = result.unwrap();
+        let response = result.expect("metrics ok");
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            response.headers().get(header::CONTENT_TYPE).unwrap(),
-            "application/json"
+            response.headers().get(header::CONTENT_TYPE).expect("ct"),
+            "text/plain; version=0.0.4"
         );
     }
 
@@ -578,10 +599,10 @@ mod tests {
         let result = handler.handle_status().await;
 
         assert!(result.is_ok());
-        let response = result.unwrap();
+        let response = result.expect("status ok");
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            response.headers().get(header::CONTENT_TYPE).expect("ct"),
             "application/json"
         );
     }

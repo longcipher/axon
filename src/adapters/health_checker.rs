@@ -72,17 +72,30 @@ impl HealthChecker {
                     .await
                 {
                     Ok(is_healthy) => {
-                        if is_healthy {
-                            // Update backend health status through the gateway service
-                            // Since we can't easily clone from the closure, we'll implement a
-                            // simpler approach through backend health status tracking
-                            tracing::debug!("Backend {} is healthy", target);
-                        } else {
-                            tracing::warn!("Backend {} returned unhealthy status", target);
-                        }
+                        // Update counters and status using thresholds
+                        backend_health.update(&target, |_, h| {
+                            if is_healthy {
+                                self.handle_health_check_success(&target, h, health_config);
+                            } else {
+                                self.handle_health_check_failure(
+                                    &target,
+                                    h,
+                                    health_config,
+                                    "backend reported unhealthy",
+                                );
+                            }
+                        });
                     }
                     Err(err) => {
                         tracing::warn!("Health check failed for backend {}: {}", target, err);
+                        backend_health.update(&target, |_, h| {
+                            self.handle_health_check_failure(
+                                &target,
+                                h,
+                                health_config,
+                                &format!("request error: {err}"),
+                            );
+                        });
                     }
                 }
             }
@@ -227,7 +240,7 @@ impl HealthChecker {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::Ordering;
 
     use super::*;
     use crate::{
@@ -246,12 +259,16 @@ mod tests {
         }
     }
 
+    use axum::body::Body as AxumBody;
+    #[async_trait::async_trait]
     impl HttpClient for MockHttpClient {
         async fn send_request(
             &self,
-            _req: hyper::Request<axum::body::Body>,
-        ) -> Result<hyper::Response<axum::body::Body>, HttpClientError> {
-            unimplemented!()
+            _req: hyper::Request<AxumBody>,
+        ) -> Result<hyper::Response<AxumBody>, HttpClientError> {
+            Err(HttpClientError::ConnectionError(
+                "not used in tests".to_string(),
+            ))
         }
 
         async fn health_check(
@@ -260,36 +277,6 @@ mod tests {
             _timeout_secs: u64,
         ) -> Result<bool, HttpClientError> {
             Ok(self.should_succeed)
-        }
-
-        async fn get(
-            &self,
-            _url: &str,
-        ) -> Result<hyper::Response<axum::body::Body>, HttpClientError> {
-            unimplemented!()
-        }
-
-        async fn post(
-            &self,
-            _url: &str,
-            _body: axum::body::Body,
-        ) -> Result<hyper::Response<axum::body::Body>, HttpClientError> {
-            unimplemented!()
-        }
-
-        async fn put(
-            &self,
-            _url: &str,
-            _body: axum::body::Body,
-        ) -> Result<hyper::Response<axum::body::Body>, HttpClientError> {
-            unimplemented!()
-        }
-
-        async fn delete(
-            &self,
-            _url: &str,
-        ) -> Result<hyper::Response<axum::body::Body>, HttpClientError> {
-            unimplemented!()
         }
     }
 
@@ -305,16 +292,12 @@ mod tests {
     }
 
     fn create_test_backend_health() -> BackendHealth {
-        BackendHealth {
-            consecutive_successes: AtomicU64::new(0),
-            consecutive_failures: AtomicU64::new(0),
-            status: std::sync::atomic::AtomicU8::new(HealthStatus::Healthy as u8),
-        }
+        BackendHealth::new("http://example.com".parse().unwrap())
     }
 
     #[test]
     fn test_handle_health_check_success() {
-        let gateway_service = Arc::new(GatewayService::new(ServerConfig::default()));
+        let gateway_service = Arc::new(GatewayService::new(Arc::new(ServerConfig::default())));
         let http_client = Arc::new(MockHttpClient::new(true)) as Arc<dyn HttpClient>;
         let health_checker = HealthChecker::new(gateway_service, http_client);
 
@@ -344,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_handle_health_check_failure() {
-        let gateway_service = Arc::new(GatewayService::new(ServerConfig::default()));
+        let gateway_service = Arc::new(GatewayService::new(Arc::new(ServerConfig::default())));
         let http_client = Arc::new(MockHttpClient::new(false)) as Arc<dyn HttpClient>;
         let health_checker = HealthChecker::new(gateway_service, http_client);
 
@@ -389,7 +372,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_backend_health() {
-        let gateway_service = Arc::new(GatewayService::new(ServerConfig::default()));
+        let gateway_service = Arc::new(GatewayService::new(Arc::new(ServerConfig::default())));
         let http_client = Arc::new(MockHttpClient::new(true)) as Arc<dyn HttpClient>;
         let health_checker = HealthChecker::new(gateway_service, http_client);
 

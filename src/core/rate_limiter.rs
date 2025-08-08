@@ -243,9 +243,7 @@ impl RouteRateLimiter {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use http::{HeaderMap, Method, Request, Version};
+    use http::{Method, Request};
 
     use super::*;
     use crate::config::models::{
