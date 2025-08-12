@@ -1,3 +1,8 @@
+//! Configuration data structures for Axon.
+//!
+//! These types map directly to TOML (also JSON / YAML) configuration files. They are
+//! intentionally serde‑friendly and include defaults so that minimal configs remain concise.
+//! Builders and enums here are considered part of the public API for embedding.
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -327,25 +332,34 @@ impl ServerConfigBuilder {
     }
 }
 
+/// TLS configuration either via manual certificate/key pair or ACME automation.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TlsConfig {
-    // Manual certificate paths (existing functionality)
+    /// Path to PEM encoded certificate (if using manual mode)
     pub cert_path: Option<String>,
+    /// Path to PEM encoded private key (if using manual mode)
     pub key_path: Option<String>,
-
-    // ACME configuration (new functionality)
+    /// Automatic certificate management configuration
     pub acme: Option<AcmeConfig>,
 }
 
+/// ACME (e.g. Let's Encrypt) certificate management configuration.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AcmeConfig {
+    /// Enable ACME flow
     pub enabled: bool,
+    /// Domain list to request certificates for
     pub domains: Vec<String>,
+    /// Contact email for ACME account
     pub email: String,
-    pub ca_url: Option<String>, // Default to Let's Encrypt production
-    pub staging: Option<bool>,  // Use Let's Encrypt staging for testing
-    pub storage_path: Option<String>, // Where to store certificates and private keys
-    pub renewal_days_before_expiry: Option<u64>, // How many days before expiry to renew
+    /// Optional custom CA directory URL (defaults to production endpoint)
+    pub ca_url: Option<String>,
+    /// Use CA staging environment (rate‑limit friendly)
+    pub staging: Option<bool>,
+    /// Where to store issued certs / keys
+    pub storage_path: Option<String>,
+    /// Days before expiry to attempt renewal
+    pub renewal_days_before_expiry: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -380,6 +394,7 @@ fn default_message() -> String {
     "Too Many Requests".to_string()
 }
 
+/// Rate limiting discriminator for how keys are derived.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitBy {
@@ -388,6 +403,7 @@ pub enum RateLimitBy {
     Route,
 }
 
+/// Algorithm used to enforce the quota semantics.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitAlgorithm {
@@ -396,6 +412,7 @@ pub enum RateLimitAlgorithm {
     SlidingWindow,
 }
 
+/// Behaviour when a key could not be extracted (missing IP/header etc.).
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MissingKeyPolicy {
@@ -407,6 +424,7 @@ fn default_on_missing_key() -> MissingKeyPolicy {
     MissingKeyPolicy::Allow
 }
 
+/// Per‑route rate limit configuration.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RateLimitConfig {
     pub by: RateLimitBy,
@@ -428,6 +446,7 @@ fn default_rate_limit_algorithm() -> RateLimitAlgorithm {
     RateLimitAlgorithm::TokenBucket
 }
 
+/// Route definitions (tagged enum) describing how incoming request paths are handled.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]

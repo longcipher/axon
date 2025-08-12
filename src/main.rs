@@ -26,7 +26,7 @@ struct Args {
     #[clap(subcommand)]
     command: Option<Commands>,
 
-    #[clap(short, long, default_value = "config.yaml")]
+    #[clap(short, long, default_value = "config.toml")]
     config: String,
 }
 
@@ -35,13 +35,13 @@ enum Commands {
     /// Validate configuration file
     Validate {
         /// Configuration file to validate
-        #[clap(short, long, default_value = "config.yaml")]
+    #[clap(short, long, default_value = "config.toml")]
         config: String,
     },
     /// Start the gateway server (default)
     Serve {
         /// Configuration file to use
-        #[clap(short, long, default_value = "config.yaml")]
+    #[clap(short, long, default_value = "config.toml")]
         config: String,
     },
 }
@@ -340,10 +340,7 @@ async fn main() -> Result<()> {
 
     let connection_tracker = Arc::new(ConnectionTracker::new());
     let http_handler = Arc::new(HttpHandler::new(
-        gateway_service_holder
-            .read()
-            .map_err(|e| eyre!("Failed to acquire gateway service read lock: {}", e))?
-            .clone(),
+        gateway_service_holder.clone(),
         http_client.clone(),
         file_system.clone(),
         connection_tracker.clone(),
@@ -494,7 +491,7 @@ async fn main() -> Result<()> {
 
 /// Validate configuration file and exit
 async fn validate_config_command(config_path: &str) -> Result<()> {
-    use axon::config::{ServerConfigValidator, loader::load_config_unchecked};
+    use axon::config::{ServerConfigValidator, loader::load_config};
 
     println!("🔍 Validating configuration file: {config_path}");
 
@@ -505,7 +502,7 @@ async fn validate_config_command(config_path: &str) -> Result<()> {
     }
 
     // Try to parse the configuration
-    let config = match load_config_unchecked(config_path).await {
+    let config = match load_config(config_path).await {
         Ok(config) => {
             println!("✅ Configuration parsing: OK");
             config

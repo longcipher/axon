@@ -1,3 +1,12 @@
+//! Graceful shutdown coordination utilities.
+//!
+//! Provides a broadcast based mechanism for signaling shutdown / restart
+//! events across async tasks plus convenience tokens for cooperative
+//! cancellation. Supports:
+//! * OS signal handling (SIGINT / SIGTERM for graceful shutdown, SIGUSR1 for restart on Unix).
+//! * Manual programmatic triggering (e.g. admin API) via `trigger_shutdown`.
+//! * Timeout‑guarded waiting (`wait_for_shutdown`) vs infinite wait.
+//! * Lightweight cloneable `ShutdownToken` to poll or await signals.
 use std::{
     sync::{
         Arc,
@@ -9,7 +18,7 @@ use std::{
 use eyre::Result;
 use tokio::{signal, sync::broadcast, time::timeout};
 
-/// Represents different shutdown reasons
+/// Enumerates reasons a shutdown signal was emitted.
 #[derive(Debug, Clone)]
 pub enum ShutdownReason {
     /// Graceful shutdown requested (SIGTERM, SIGINT)
@@ -20,7 +29,7 @@ pub enum ShutdownReason {
     Force,
 }
 
-/// Manages graceful shutdown and restart functionality
+/// Coordinates graceful shutdown / restart broadcast and signal handling.
 pub struct GracefulShutdown {
     /// Broadcast sender for shutdown signals
     shutdown_tx: broadcast::Sender<ShutdownReason>,
@@ -31,12 +40,12 @@ pub struct GracefulShutdown {
 }
 
 impl GracefulShutdown {
-    /// Create a new GracefulShutdown manager with default 30-second timeout
+    /// Create with default 30‑second timeout.
     pub fn new() -> Self {
         Self::with_timeout(Duration::from_secs(30))
     }
 
-    /// Create a new GracefulShutdown manager with custom timeout
+    /// Create with caller supplied timeout window.
     pub fn with_timeout(shutdown_timeout: Duration) -> Self {
         let (shutdown_tx, _) = broadcast::channel(16);
         Self {
@@ -46,17 +55,17 @@ impl GracefulShutdown {
         }
     }
 
-    /// Get a receiver for shutdown signals
+    /// Subscribe to future shutdown events.
     pub fn subscribe(&self) -> broadcast::Receiver<ShutdownReason> {
         self.shutdown_tx.subscribe()
     }
 
-    /// Check if shutdown has been initiated
+    /// Whether we've already initiated shutdown.
     pub fn is_shutdown_initiated(&self) -> bool {
         self.shutdown_initiated.load(Ordering::Relaxed)
     }
 
-    /// Manually trigger shutdown (useful for API-triggered restarts)
+    /// Manually trigger a shutdown / restart (idempotent).
     pub fn trigger_shutdown(&self, reason: ShutdownReason) -> Result<()> {
         if self
             .shutdown_initiated
@@ -69,7 +78,7 @@ impl GracefulShutdown {
         Ok(())
     }
 
-    /// Start listening for OS signals and manage shutdown process
+    /// Start OS signal listener loop (returns after first signal handled).
     pub async fn run_signal_handler(&self) -> Result<()> {
         tracing::info!(
             "Signal handler started. Listening for SIGTERM, SIGINT (graceful shutdown) and SIGUSR1 (restart)"
@@ -138,7 +147,7 @@ impl GracefulShutdown {
         }
     }
 
-    /// Wait for shutdown with timeout, returns the reason for shutdown
+    /// Await a shutdown signal or force after timeout, returning the reason.
     pub async fn wait_for_shutdown(&self) -> ShutdownReason {
         let mut receiver = self.subscribe();
 
@@ -161,7 +170,7 @@ impl GracefulShutdown {
         }
     }
 
-    /// Wait indefinitely for shutdown signal (used in main application loop)
+    /// Await a shutdown signal indefinitely.
     pub async fn wait_for_shutdown_signal(&self) -> ShutdownReason {
         let mut receiver = self.subscribe();
 
@@ -177,7 +186,7 @@ impl GracefulShutdown {
         }
     }
 
-    /// Create a shutdown token that can be used to cancel operations
+    /// Produce a cloneable token for cooperative cancellation in tasks.
     pub fn shutdown_token(&self) -> ShutdownToken {
         ShutdownToken {
             receiver: self.subscribe(),
@@ -192,7 +201,7 @@ impl Default for GracefulShutdown {
     }
 }
 
-/// A token that can be used to check for shutdown signals
+/// Cloneable handle for checking / awaiting shutdown events.
 pub struct ShutdownToken {
     receiver: broadcast::Receiver<ShutdownReason>,
     shutdown_initiated: Arc<AtomicBool>,
@@ -208,12 +217,12 @@ impl Clone for ShutdownToken {
 }
 
 impl ShutdownToken {
-    /// Check if shutdown has been initiated
+    /// Fast check for shutdown state (no await).
     pub fn is_shutdown_initiated(&self) -> bool {
         self.shutdown_initiated.load(Ordering::Relaxed)
     }
 
-    /// Wait for shutdown signal (non-blocking check)
+    /// Non‑blocking attempt to consume a shutdown signal if present.
     pub fn try_shutdown(&mut self) -> Option<ShutdownReason> {
         match self.receiver.try_recv() {
             Ok(reason) => Some(reason),
@@ -226,7 +235,7 @@ impl ShutdownToken {
         }
     }
 
-    /// Wait for shutdown signal (blocking)
+    /// Await a shutdown signal (falls back to Force if channel closed).
     pub async fn wait_for_shutdown(&mut self) -> ShutdownReason {
         match self.receiver.recv().await {
             Ok(reason) => reason,

@@ -19,7 +19,7 @@ examples-run-all:
 
 # Validate all example configs
 examples-validate:
-  for f in examples/configs/*.yaml; do \
+  for f in examples/configs/*.toml; do \
     echo "Validating $f"; \
     cargo run -- validate --config "$f" || exit 1; \
   done

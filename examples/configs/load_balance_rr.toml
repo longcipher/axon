@@ -1,0 +1,14 @@
+# Load balancing (round-robin) scenario
+listen_addr = "127.0.0.1:8082"
+
+[health_check]
+enabled = false
+
+[routes."/svc/"]
+type = "load_balance"
+strategy = "round_robin"
+
+targets = [
+  "http://127.0.0.1:9101",
+  "http://127.0.0.1:9102",
+]

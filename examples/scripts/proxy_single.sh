@@ -1,20 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BIN=${BIN:-"cargo run --"}
-CFG=examples/configs/proxy_single.yaml
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/_lib.sh"
 
-# Start a tiny backend
+BIN=${BIN:-"cargo run --"}
+CFG=examples/configs/proxy_single_rewrite.toml
+
+cleanup_ports 8081 9001
+
+# Start backend
 python3 -m http.server 9001 --bind 127.0.0.1 >/dev/null 2>&1 &
-B1=$!
-trap 'kill $B1 2>/dev/null || true' EXIT
+backend_pid=$!
+trap 'kill $backend_pid 2>/dev/null || true' EXIT
+wait_port_listen 9001
 
 # Start gateway
 $BIN serve --config "$CFG" &
-PID=$!
-trap 'kill $PID 2>/dev/null || true' EXIT
-sleep 1
+gateway_pid=$!
+timeout_guard 30 "$gateway_pid"
+trap 'kill $gateway_pid $backend_pid 2>/dev/null || true' EXIT
+wait_port_listen 8081
+wait_http_ok http://127.0.0.1:8081/api 50 0.1 200 || { echo "[proxy_single] FAIL: gateway not ready"; exit 1; }
 
-# Verify proxy (python http.server serves current dir; 200 expected)
-code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8081/api/)
-[[ "$code" == "200" ]] && echo "[proxy_single] OK" || { echo "[proxy_single] FAIL"; exit 1; }
+code1=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8081/api)
+code2=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8081/api/)
+if [[ "$code1" == "200" && "$code2" == "200" ]]; then
+	echo "[proxy_single] OK"
+else
+	echo "[proxy_single] FAIL: code1=$code1 code2=$code2"; exit 1
+fi

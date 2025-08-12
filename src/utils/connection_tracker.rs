@@ -1,3 +1,8 @@
+//! Connection tracking & graceful draining utilities.
+//!
+//! Each TCP connection is registered with a lightweight record keeping active
+//! request count and age. During shutdown the tracker can wait for in‑flight
+//! requests to finish (bounded by a timeout) and optionally close idle ones.
 use std::{
     net::SocketAddr,
     sync::{
@@ -13,7 +18,7 @@ use tokio::{sync::broadcast, time::sleep};
 /// Unique identifier for a connection
 pub type ConnectionId = u64;
 
-/// Information about an active connection
+/// Information about an active connection.
 #[derive(Debug)]
 pub struct ConnectionInfo {
     pub id: ConnectionId,
@@ -73,6 +78,7 @@ pub struct ConnectionTracker {
 }
 
 impl ConnectionTracker {
+    /// Create a new empty tracker.
     pub fn new() -> Self {
         let (shutdown_tx, _) = broadcast::channel(16);
         Self {
@@ -83,6 +89,7 @@ impl ConnectionTracker {
     }
 
     /// Register a new connection and return its info
+    /// Register a new connection and return an Arc to its info record.
     pub fn register_connection(&self, remote_addr: SocketAddr) -> Arc<ConnectionInfo> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let info = Arc::new(ConnectionInfo::new(id, remote_addr));
@@ -100,6 +107,7 @@ impl ConnectionTracker {
     }
 
     /// Unregister a connection
+    /// Remove (unregister) a connection by id.
     pub fn unregister_connection(&self, connection_id: ConnectionId) {
         if let Some((_, info)) = self.connections.remove(&connection_id) {
             tracing::debug!(
@@ -112,17 +120,20 @@ impl ConnectionTracker {
     }
 
     /// Get connection information
+    /// Lookup a connection info record by id.
     pub fn get_connection_info(&self, connection_id: ConnectionId) -> Option<Arc<ConnectionInfo>> {
         self.connections
             .read(&connection_id, |_, info| info.clone())
     }
 
     /// Get the total number of active connections
+    /// Current number of active (registered) connections.
     pub fn active_connection_count(&self) -> usize {
         self.connections.len()
     }
 
     /// Get the total number of requests across all connections
+    /// Sum of active requests across all connections.
     pub fn total_active_requests(&self) -> u64 {
         let mut total = 0;
         self.connections.scan(|_, info| {
@@ -132,6 +143,7 @@ impl ConnectionTracker {
     }
 
     /// Get all connection information
+    /// Return a snapshot list of all connection records.
     pub fn get_all_connections(&self) -> Vec<Arc<ConnectionInfo>> {
         let mut connections = Vec::new();
         self.connections.scan(|_, info| {
@@ -141,6 +153,7 @@ impl ConnectionTracker {
     }
 
     /// Check if any connections have active requests
+    /// Whether any connection currently has >0 active requests.
     pub fn has_active_requests(&self) -> bool {
         let mut has_active = false;
         self.connections.scan(|_, info| {
@@ -152,6 +165,7 @@ impl ConnectionTracker {
     }
 
     /// Get connections that are idle (no active requests)
+    /// All connections with zero active requests.
     pub fn get_idle_connections(&self) -> Vec<Arc<ConnectionInfo>> {
         let mut idle_connections = Vec::new();
         self.connections.scan(|_, info| {
@@ -163,6 +177,7 @@ impl ConnectionTracker {
     }
 
     /// Get connections with active requests
+    /// All connections with at least one active request.
     pub fn get_active_connections(&self) -> Vec<Arc<ConnectionInfo>> {
         let mut active_connections = Vec::new();
         self.connections.scan(|_, info| {
@@ -174,17 +189,20 @@ impl ConnectionTracker {
     }
 
     /// Signal shutdown to all connections
+    /// Broadcast a shutdown signal to subscribers.
     pub fn signal_shutdown(&self) {
         tracing::info!("Signaling shutdown to all connections");
         let _ = self.shutdown_tx.send(());
     }
 
     /// Subscribe to shutdown signals
+    /// Subscribe to the shutdown broadcast channel.
     pub fn subscribe_shutdown(&self) -> broadcast::Receiver<()> {
         self.shutdown_tx.subscribe()
     }
 
     /// Wait for all connections to drain (become idle) with timeout
+    /// Wait until all connections are idle or the timeout elapses.
     pub async fn wait_for_drain(&self, timeout: Duration) -> bool {
         let start = Instant::now();
         let mut check_interval = Duration::from_millis(100);
@@ -219,6 +237,7 @@ impl ConnectionTracker {
     }
 
     /// Force close all idle connections
+    /// Force removal of all idle connections.
     pub fn close_idle_connections(&self) {
         let idle_connections = self.get_idle_connections();
         tracing::info!("Closing {} idle connections", idle_connections.len());
@@ -229,6 +248,7 @@ impl ConnectionTracker {
     }
 
     /// Get connection statistics
+    /// Aggregate snapshot statistics.
     pub fn get_stats(&self) -> ConnectionStats {
         let all_connections = self.get_all_connections();
         let total_connections = all_connections.len();

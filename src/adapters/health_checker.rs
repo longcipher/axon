@@ -1,3 +1,25 @@
+//! Active health checking adapter.
+//!
+//! This module implements periodic health probing of configured backends. It
+//! runs an asynchronous loop that issues HTTP requests (via the [`HttpClient`]
+//! port) against each backend's health endpoint and updates shared
+//! `BackendHealth` state inside the [`GatewayService`]. Consecutive success and
+//! failure counters drive state transitions with configurable thresholds,
+//! providing hysteresis so a single transient error does not flip health.
+//!
+//! # Algorithm
+//! * Each iteration waits `interval_secs`.
+//! * For every backend the dedicated endpoint is probed (backend specific path
+//!   override or the global default).
+//! * On success: increment `consecutive_successes`, reset failures; once the
+//!   success threshold is met an UNHEALTHY backend becomes HEALTHY.
+//! * On failure: increment `consecutive_failures`, reset successes; once the
+//!   failure threshold is met a HEALTHY backend becomes UNHEALTHY.
+//! * Results are reflected in `scc::HashMap` entries without blocking long
+//!   operations; each entry holds atomic counters for cheap updates.
+//!
+//! The loop currently runs indefinitely; graceful shutdown is coordinated by
+//! higher‑level shutdown signaling (not yet integrated directly here).
 use std::{sync::Arc, time::Duration};
 
 use eyre::{Result, WrapErr};
@@ -9,13 +31,15 @@ use crate::{
     ports::http_client::HttpClient,
 };
 
-/// Health checker adapter for monitoring backend health
+/// Periodically probes backend health endpoints and updates aggregated status.
 pub struct HealthChecker {
     gateway_service: Arc<GatewayService>,
     http_client: Arc<dyn HttpClient>,
 }
 
 impl HealthChecker {
+    /// Create a new health checker bound to the shared gateway service and an
+    /// HTTP client implementation.
     pub fn new(gateway_service: Arc<GatewayService>, http_client: Arc<dyn HttpClient>) -> Self {
         Self {
             gateway_service,
@@ -23,7 +47,11 @@ impl HealthChecker {
         }
     }
 
-    /// Run the health checker loop
+    /// Start the continuous health check loop.
+    ///
+    /// This function does not return under normal circumstances (it loops
+    /// forever). If health checking is disabled in configuration it returns
+    /// immediately.
     pub async fn run(&self) -> Result<()> {
         let health_config = self.gateway_service.health_config();
 
@@ -104,7 +132,8 @@ impl HealthChecker {
         }
     }
 
-    /// Handle successful health check
+    /// Apply effects of a successful probe to counters and potentially mark
+    /// backend healthy once threshold is met.
     #[allow(dead_code)]
     fn handle_health_check_success(
         &self,
@@ -143,7 +172,8 @@ impl HealthChecker {
         }
     }
 
-    /// Handle failed health check
+    /// Apply effects of a failed probe and potentially mark backend unhealthy
+    /// once the failure threshold is hit.
     #[allow(dead_code)]
     fn handle_health_check_failure(
         &self,
@@ -186,7 +216,8 @@ impl HealthChecker {
         }
     }
 
-    /// Perform a single health check for a specific backend
+    /// Perform an on‑demand health probe for a specific backend URL (used by
+    /// tests or potential admin APIs).
     pub async fn check_backend_health(&self, backend_url: &str) -> Result<bool> {
         let health_config = self.gateway_service.health_config();
         let backend_path = self.gateway_service.get_backend_health_path(backend_url);
@@ -198,7 +229,7 @@ impl HealthChecker {
             .wrap_err_with(|| format!("Failed to check health for backend: {backend_url}"))
     }
 
-    /// Get current health status of all backends
+    /// Snapshot current (backend_url, status) pairs.
     pub fn get_backend_health_status(&self) -> Vec<(String, HealthStatus)> {
         let mut status = Vec::new();
 
@@ -209,7 +240,7 @@ impl HealthChecker {
         status
     }
 
-    /// Check if there are any healthy backends
+    /// Return true if at least one backend is currently healthy.
     pub fn has_healthy_backends(&self) -> bool {
         let mut has_healthy = false;
         self.gateway_service
@@ -222,7 +253,7 @@ impl HealthChecker {
         has_healthy
     }
 
-    /// Get count of healthy vs unhealthy backends
+    /// Return counts of (healthy, unhealthy) backends for summary displays.
     pub fn get_health_summary(&self) -> (usize, usize) {
         let mut healthy = 0;
         let mut unhealthy = 0;

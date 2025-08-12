@@ -1,3 +1,10 @@
+//! Assorted reusable Axum middleware helpers used by the gateway.
+//!
+//! These functions are lightweight composable layers that can be attached to
+//! the Axum `Router` to enrich responses, add diagnostics, or enforce
+//! cross‑cutting concerns (security headers, CORS, request timing, request ID,
+//! Alt-Svc advertising). They deliberately stay stateless (except for reading
+//! shared configuration) to minimize contention and complexity.
 use std::{
     sync::{Arc, RwLock},
     time::Instant,
@@ -7,7 +14,8 @@ use axum::{extract::Request, http::HeaderValue, middleware::Next, response::Resp
 
 use crate::config::models::ServerConfig;
 
-/// Middleware that adds Alt-Svc header when HTTP/3 is enabled
+/// Add an `Alt-Svc` header advertising HTTP/3 (h3) support when TLS + HTTP/3
+/// are enabled in the current configuration snapshot.
 pub async fn add_alt_svc_header(
     req: Request,
     next: Next,
@@ -38,7 +46,7 @@ pub async fn add_alt_svc_header(
     response
 }
 
-/// Creates a closure for the Alt-Svc middleware
+/// Create a cloneable closure wrapping [`add_alt_svc_header`].
 pub fn create_alt_svc_middleware(
     config_holder: Arc<RwLock<Arc<ServerConfig>>>,
 ) -> impl Fn(Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>
@@ -49,7 +57,7 @@ pub fn create_alt_svc_middleware(
     }
 }
 
-/// Middleware for request timing and logging
+/// Log start/end of a request including latency.
 pub async fn request_timing_middleware(req: Request, next: Next) -> Response {
     let start = Instant::now();
     let method = req.method().clone();
@@ -73,7 +81,8 @@ pub async fn request_timing_middleware(req: Request, next: Next) -> Response {
     response
 }
 
-/// Middleware for adding security headers
+/// Add common security hardening headers (best‑effort, does not overwrite if
+/// already present).
 pub async fn security_headers_middleware(req: Request, next: Next) -> Response {
     let mut response = next.run(req).await;
     let headers = response.headers_mut();
@@ -96,7 +105,7 @@ pub async fn security_headers_middleware(req: Request, next: Next) -> Response {
     response
 }
 
-/// Middleware for CORS handling
+/// Provide permissive CORS headers reflecting caller origin (if provided).
 pub async fn cors_middleware(req: Request, next: Next) -> Response {
     let origin = req.headers().get("origin").cloned();
     let mut response = next.run(req).await;
@@ -119,7 +128,8 @@ pub async fn cors_middleware(req: Request, next: Next) -> Response {
     response
 }
 
-/// Middleware for adding custom headers from configuration
+/// Inject custom headers defined in configuration (invalid pairs are skipped
+/// with a warning).
 pub async fn custom_headers_middleware(
     req: Request,
     next: Next,
@@ -143,7 +153,7 @@ pub async fn custom_headers_middleware(
     response
 }
 
-/// Creates a closure for custom headers middleware
+/// Create a cloneable closure wrapping [`custom_headers_middleware`].
 pub fn create_custom_headers_middleware(
     custom_headers: Arc<std::collections::HashMap<String, String>>,
 ) -> impl Fn(Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>
@@ -154,7 +164,7 @@ pub fn create_custom_headers_middleware(
     }
 }
 
-/// Middleware for request ID generation and tracking
+/// Generate a per‑request UUID and expose it via tracing plus `X-Request-ID`.
 pub async fn request_id_middleware(req: Request, next: Next) -> Response {
     let request_id = uuid::Uuid::new_v4().to_string();
 

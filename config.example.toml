@@ -1,0 +1,77 @@
+# Axon API Gateway Configuration Example (TOML)
+listen_addr = "0.0.0.0:8080"
+
+[health_check]
+enabled = true
+path = "/health"
+interval_secs = 30
+timeout_secs = 5
+
+[protocols]
+http2_enabled = true
+websocket_enabled = true
+http3_enabled = false
+http2_max_frame_size = 65536
+http2_max_concurrent_streams = 100
+
+# [tls]
+# cert_path = "/path/to/cert.pem"
+# key_path = "/path/to/key.pem"
+# protocols = ["TLSv1.2", "TLSv1.3"]
+
+[routes."/api/v1/"]
+type = "load_balance"
+strategy = "round_robin"
+
+targets = [
+  "http://backend1:3000",
+  "http://backend2:3000",
+  "http://backend3:3000",
+]
+
+  [routes."/api/v1/".rate_limit]
+  requests_per_minute = 100
+  burst_size = 20
+
+  [routes."/api/v1/".request_headers.add]
+  "X-Gateway" = "axon"
+  "X-Forwarded-Proto" = "https"
+
+  [routes."/api/v1/".request_headers]
+  remove = ["Server"]
+
+  [routes."/api/v1/".response_headers.add]
+  "X-Response-Time" = "auto"
+  "Cache-Control" = "no-cache"
+
+[routes."/auth/"]
+type = "proxy"
+target = "http://auth-service:4000"
+path_rewrite = "/auth/(.*)"
+
+  [routes."/auth/".rate_limit]
+  requests_per_minute = 50
+  burst_size = 10
+
+[routes."/static/"]
+type = "static"
+root = "/var/www/static"
+
+  [routes."/static/".rate_limit]
+  requests_per_minute = 200
+  burst_size = 50
+
+[routes."/old-api/"]
+type = "redirect"
+target = "/api/v1/"
+status_code = 301
+
+[routes."/ws/"]
+type = "proxy"
+target = "ws://websocket-service:5000"
+
+[backend_health_paths]
+"http://backend1:3000" = "/health"
+"http://backend2:3000" = "/health"
+"http://backend3:3000" = "/health"
+"http://auth-service:4000" = "/health/check"

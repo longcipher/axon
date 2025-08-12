@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-examples:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Show rustc version
+        run: rustc -Vv
+
+      - name: Build
+        run: cargo build --all --locked --verbose
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Unit tests
+        run: cargo test --all --locked --verbose
+
+      - name: Run examples scripts
+        run: |
+          chmod +x examples/scripts/*.sh
+          examples/scripts/run_all.sh
+
+      - name: Upload logs on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: axon-logs
+          path: |
+            target/debug/deps/*.dSYM/**
+            target/debug/*.dSYM/**
+            **/*.log
+          if-no-files-found: ignore

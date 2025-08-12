@@ -1,0 +1,13 @@
+## Base hot reload scenario configuration (route /r2/ dynamically added)
+listen_addr = "127.0.0.1:8089"
+
+[health_check]
+enabled = false
+
+[routes."/r1/"]
+type = "static"
+root = "examples/static"
+
+[routes."/r2/"]
+type = "static"
+root = "examples/static"

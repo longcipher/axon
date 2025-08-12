@@ -1,8 +1,0 @@
-# Static files scenario
-listen_addr: "127.0.0.1:8080"
-health_check:
-  enabled: false
-routes:
-  "/static/":
-    type: "static"
-    root: "examples/static"

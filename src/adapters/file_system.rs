@@ -1,3 +1,37 @@
+//! File system adapter implementation.
+//!
+//! This module provides the concrete implementation of the [`FileSystem`] port
+//! used by the gateway for serving static assets. It wraps `tower_http::ServeDir`
+//! to efficiently serve files and directory listings (with automatic
+//! `index.html` resolution) and adds a small collection of helper methods for
+//! safe, sandboxed file operations that prevent path traversal attacks.
+//!
+//! Only the `serve_file` method is required by the port. The additional helper
+//! methods (`file_exists`, `read_file`, `write_file`, `delete_file`,
+//! `list_directory`) are convenience utilities leveraged by higher‑level
+//! features (or future extensions) and are intentionally kept outside of the
+//! trait to avoid inflating the port surface area.
+//!
+//! # Security
+//! Every helper method canonicalizes both the configured root and the target
+//! path, rejecting any access that would escape the static root (e.g. attempts
+//! containing `..`). This design avoids directory traversal vulnerabilities
+//! when user‑supplied paths are involved.
+//!
+//! # Example
+//! ```no_run
+//! # use axon::adapters::FileSystemAdapter;
+//! # use axon::ports::file_system::FileSystem;
+//! # use axum::body::Body;
+//! # use hyper::Request;
+//! # use std::convert::TryFrom;
+//! # async fn demo() -> eyre::Result<()> {
+//! let fs = FileSystemAdapter::new();
+//! let req = Request::builder().uri("/static/logo.png").body(Body::empty())?;
+//! let response = fs.serve_file("./public", "logo.png", req).await?;
+//! assert!(response.status().is_success());
+//! # Ok(()) }
+//! ```
 use std::convert::TryFrom;
 
 use axum::body::Body as AxumBody;
@@ -9,17 +43,31 @@ use tower_http::services::ServeDir;
 
 use crate::ports::file_system::{FileSystem, FileSystemError};
 
-/// File system adapter using tower-http ServeDir for static file serving
+/// File system adapter using `tower_http::ServeDir` for static file serving.
+///
+/// It implements the minimal [`FileSystem`] port plus several sandboxed helper
+/// utilities. Construction is zero‑cost; all heavy work happens per request.
 #[derive(Debug, Default, Clone)]
 pub struct FileSystemAdapter;
 
 impl FileSystemAdapter {
+    /// Create a new adapter instance.
+    ///
+    /// The adapter is stateless; creating multiple instances is cheap.
     pub fn new() -> Self {
         Self
     }
 }
 
 impl FileSystem for FileSystemAdapter {
+    /// Serve a file or directory index below `root`.
+    ///
+    /// `path` is a logical path relative to `root`. A leading slash is
+    /// tolerated. Directories automatically attempt to serve `index.html`.
+    ///
+    /// # Errors
+    /// Returns a [`FileSystemError`] if the path is invalid (e.g. traversal
+    /// attempt) or IO / adapter errors occur.
     async fn serve_file(
         &self,
         root: &str,
@@ -64,6 +112,9 @@ impl FileSystem for FileSystemAdapter {
 impl FileSystemAdapter {
     // Helper methods for additional file operations outside the trait
     // These are implementation-specific methods that go beyond the port interface
+    /// Check whether a regular file exists inside `root`.
+    ///
+    /// Performs canonicalization and rejects traversal attempts.
     pub async fn file_exists(&self, root: &str, path: &str) -> Result<bool, FileSystemError> {
         let full_path = std::path::Path::new(root).join(path.trim_start_matches('/'));
 
@@ -103,6 +154,10 @@ impl FileSystemAdapter {
         }
     }
 
+    /// Read a file's entire contents as bytes.
+    ///
+    /// # Security
+    /// Ensures the resolved path remains within `root` after canonicalization.
     pub async fn read_file(&self, root: &str, path: &str) -> Result<Vec<u8>, FileSystemError> {
         let full_path = std::path::Path::new(root).join(path.trim_start_matches('/'));
 
@@ -121,6 +176,9 @@ impl FileSystemAdapter {
             .map_err(FileSystemError::IoError)
     }
 
+    /// Write bytes to a file, creating parent directories when necessary.
+    ///
+    /// Rejects attempts to escape `root` after directory creation.
     pub async fn write_file(
         &self,
         root: &str,
@@ -154,6 +212,7 @@ impl FileSystemAdapter {
             .map_err(FileSystemError::IoError)
     }
 
+    /// Delete a file located under `root`.
     pub async fn delete_file(&self, root: &str, path: &str) -> Result<(), FileSystemError> {
         let full_path = std::path::Path::new(root).join(path.trim_start_matches('/'));
 
@@ -172,6 +231,9 @@ impl FileSystemAdapter {
             .map_err(FileSystemError::IoError)
     }
 
+    /// List non‑recursive entries of a directory under `root`.
+    ///
+    /// Returns file and subdirectory names (not full paths).
     pub async fn list_directory(
         &self,
         root: &str,

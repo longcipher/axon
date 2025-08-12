@@ -16,12 +16,22 @@ use tokio::time::timeout;
 
 use crate::ports::http_client::{HttpClient, HttpClientError, HttpClientResult};
 
-/// HTTP client adapter using hyper with HTTP/1.1 and HTTP/2 support
+/// HTTP client adapter using Hyper with Rustls (HTTP/1.1 + HTTP/2).
+///
+/// Responsibilities:
+/// * Adds a small set of sensible default headers
+/// * Forces request version to HTTP/1.1 while allowing ALPN to negotiate h2
+/// * Performs HEAD based health checks with timeout
+/// * Converts between Hyper body and Axum body types
+///
+/// This adapter is intentionally minimal; higher level retries / circuit breaking
+/// can be layered on a different abstraction if required.
 pub struct HttpClientAdapter {
     client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
 }
 
 impl HttpClientAdapter {
+    /// Create a new HTTP client adapter.
     pub fn new() -> Result<Self> {
         let mut http_connector = HttpConnector::new();
         http_connector.enforce_http(false); // Allow HTTPS URLs
@@ -66,6 +76,7 @@ impl HttpClientAdapter {
     }
 
     /// Add common HTTP headers to requests
+    /// Inject a consistent set of headers if absent (User-Agent, Accept ...).
     fn add_common_headers(req: &mut Request<AxumBody>) {
         let headers = req.headers_mut();
         if !headers.contains_key(header::USER_AGENT) {

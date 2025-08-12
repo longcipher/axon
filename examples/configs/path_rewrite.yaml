@@ -1,9 +1,0 @@
-# Path rewrite proxy scenario
-listen_addr: "127.0.0.1:8086"
-health_check:
-  enabled: false
-routes:
-  "/svc/":
-    type: "proxy"
-    target: "http://127.0.0.1:9301"
-    path_rewrite: "/real"

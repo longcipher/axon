@@ -1,10 +1,23 @@
+//! Tracing initialization utilities.
+//!
+//! Centralizes setup of `tracing` subscribers for different runtime scenarios:
+//! * Auto mode (`init_tracing`) selects human readable formatting when stderr
+//!   is a TTY, else JSON (good for containers).
+//! * Developer mode (`init_console_tracing`) enables pretty formatting with
+//!   rich metadata.
+//! * Custom mode (`init_tracing_with_config`) lets callers choose level,
+//!   structured JSON, and span inclusion.
+//!
+//! Helper functions create commonly used spans with consistent field sets so
+//! downstream code records structured attributes uniformly.
 use std::io::IsTerminal;
 
 use eyre::{Result, WrapErr};
 use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt, util::SubscriberInitExt};
 
-/// Initialize structured logging with automatic format detection
-/// Uses human-friendly format for terminal output, JSON for non-terminal
+/// Initialize structured logging with automatic format selection.
+///
+/// Human‑friendly compact format when attached to a TTY, otherwise JSON.
 pub fn init_tracing() -> Result<()> {
     let is_terminal = std::io::stderr().is_terminal();
 
@@ -46,7 +59,7 @@ pub fn init_tracing() -> Result<()> {
     Ok(())
 }
 
-/// Initialize console-friendly logging for development
+/// Initialize verbose console logging for local development.
 pub fn init_console_tracing() -> Result<()> {
     tracing::info!("Initializing Axon console logging");
 
@@ -66,7 +79,7 @@ pub fn init_console_tracing() -> Result<()> {
     Ok(())
 }
 
-/// Initialize tracing with custom configuration
+/// Initialize tracing with user supplied settings.
 pub fn init_tracing_with_config(level: &str, json_format: bool, include_spans: bool) -> Result<()> {
     tracing::info!(
         "Initializing Axon logging with level: {}, json: {}, spans: {}",
@@ -105,7 +118,7 @@ pub fn init_tracing_with_config(level: &str, json_format: bool, include_spans: b
     Ok(())
 }
 
-/// Shutdown tracing gracefully
+/// Emit shutdown messages (explicit flushing not currently required).
 pub fn shutdown_tracing() {
     tracing::info!("Axon tracing shutdown initiated");
     // tracing-subscriber doesn't provide explicit shutdown,
@@ -113,12 +126,12 @@ pub fn shutdown_tracing() {
     tracing::info!("Axon tracing shutdown complete");
 }
 
-/// Configure tracing for specific service components
+/// Create span labeling a logical component.
 pub fn configure_component_tracing(component: &str) -> tracing::Span {
     tracing::info_span!("component", name = component)
 }
 
-/// Create a request-scoped tracing span with comprehensive request info
+/// Create a request-scoped span with core attributes pre‑allocated.
 pub fn create_request_span(
     method: &str,
     path: &str,
@@ -141,7 +154,7 @@ pub fn create_request_span(
     )
 }
 
-/// Create a backend request span
+/// Create a backend request span capturing target URL and verb/path.
 pub fn create_backend_span(backend_url: &str, method: &str, path: &str) -> tracing::Span {
     tracing::info_span!(
         "backend_request",

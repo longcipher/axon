@@ -1,3 +1,22 @@
+//! Lightweight metrics helpers for Axon.
+//!
+//! This module exposes a small set of convenience functions and RAII timers
+//! wrapping the `metrics` crate macros. It intentionally avoids embedding a
+//! concrete exporter (the application can initialize any compatible recorder
+//! externally) while still documenting and describing Axon‑specific metric
+//! names.
+//!
+//! Provided metrics (labels vary by family):
+//! * `axon_requests_total` (counter)
+//! * `axon_request_duration_seconds` (histogram)
+//! * `axon_backend_requests_total` (counter)
+//! * `axon_backend_request_duration_seconds` (histogram)
+//! * `axon_backend_health_status` (gauge per backend)
+//! * `axon_active_connections` (gauge)
+//! * `axon_active_requests` (gauge)
+//!
+//! The `*_timer` structs leverage `Drop` to record durations safely even when
+//! early returns or errors occur.
 use std::{collections::HashMap, sync::Mutex, time::Instant};
 
 use metrics::{
@@ -53,7 +72,7 @@ pub static BACKEND_HEALTH_GAUGES: Lazy<Mutex<HashMap<String, f64>>> = Lazy::new(
     Mutex::new(HashMap::new())
 });
 
-/// Set the health status of a backend
+/// Set (and record) the health status gauge for a backend.
 pub fn set_backend_health_status(backend_id: &str, is_healthy: bool) {
     let health_value = if is_healthy { 1.0 } else { 0.0 };
 
@@ -68,7 +87,7 @@ pub fn set_backend_health_status(backend_id: &str, is_healthy: bool) {
     gauge!(AXON_BACKEND_HEALTH_STATUS, "backend" => backend_label).set(health_value);
 }
 
-/// Increment the total request counter
+/// Increment the total request counter for an inbound gateway request.
 pub fn increment_request_total(path: &str, method: &str, status: u16) {
     counter!(
         AXON_REQUESTS_TOTAL,
@@ -79,7 +98,7 @@ pub fn increment_request_total(path: &str, method: &str, status: u16) {
     .increment(1);
 }
 
-/// Record request duration
+/// Record a completed inbound request's duration.
 pub fn record_request_duration(path: &str, method: &str, duration: std::time::Duration) {
     histogram!(
         AXON_REQUEST_DURATION_SECONDS,
@@ -89,7 +108,7 @@ pub fn record_request_duration(path: &str, method: &str, duration: std::time::Du
     .record(duration.as_secs_f64());
 }
 
-/// Increment backend request counter
+/// Increment total count of proxied backend requests.
 pub fn increment_backend_request_total(backend: &str, path: &str, method: &str, status: u16) {
     counter!(
         AXON_BACKEND_REQUESTS_TOTAL,
@@ -101,7 +120,7 @@ pub fn increment_backend_request_total(backend: &str, path: &str, method: &str, 
     .increment(1);
 }
 
-/// Record backend request duration
+/// Record a completed backend request duration.
 pub fn record_backend_request_duration(
     backend: &str,
     path: &str,
@@ -117,17 +136,17 @@ pub fn record_backend_request_duration(
     .record(duration.as_secs_f64());
 }
 
-/// Set the number of active connections
+/// Set current active connection count.
 pub fn set_active_connections(count: usize) {
     gauge!(AXON_ACTIVE_CONNECTIONS).set(count as f64);
 }
 
-/// Set the number of active requests
+/// Set current active in‑flight request count.
 pub fn set_active_requests(count: u64) {
     gauge!(AXON_ACTIVE_REQUESTS).set(count as f64);
 }
 
-/// Helper struct for measuring request duration using RAII
+/// RAII helper measuring inbound request duration.
 pub struct RequestTimer {
     start: Instant,
     path: String,
@@ -150,7 +169,7 @@ impl Drop for RequestTimer {
     }
 }
 
-/// Helper struct for measuring backend request duration using RAII
+/// RAII helper measuring backend request duration.
 pub struct BackendRequestTimer {
     start: Instant,
     backend: String,
@@ -180,7 +199,7 @@ impl Drop for BackendRequestTimer {
     }
 }
 
-/// Initialize metrics system
+/// Initialize metric descriptions (idempotent).
 pub fn init_metrics() -> eyre::Result<()> {
     tracing::info!("Initializing Axon metrics system");
 
@@ -191,7 +210,7 @@ pub fn init_metrics() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Collect and return current metrics in a simple format
+/// Collect a snapshot of gauge values used for ad‑hoc exports.
 pub fn get_current_metrics() -> HashMap<String, f64> {
     let mut metrics = HashMap::new();
 

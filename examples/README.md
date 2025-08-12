@@ -10,9 +10,9 @@ This directory contains ready-to-run sample configurations and scripts for commo
 ## How to use
 
 - Validate config:
-  axon validate --config examples/configs/SCENARIO.yaml
+  axon validate --config examples/configs/SCENARIO.toml
 - Run server (foreground):
-  axon serve --config examples/configs/SCENARIO.yaml
+  axon serve --config examples/configs/SCENARIO.toml
 - Run scripted smoke test:
   examples/scripts/SCENARIO.sh
 

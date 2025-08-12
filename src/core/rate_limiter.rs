@@ -1,3 +1,11 @@
+//! Route‑scoped rate limiting abstractions built atop `governor`.
+//!
+//! Exposes a small enum (`RouteRateLimiter`) that encapsulates one of several
+//! limiter modes (global route, per IP, per header value) with unified `check`
+//! semantics returning an Axum response on violation. Internals use
+//! `governor`'s in‑memory state stores and support different algorithms
+//! (TokenBucket, SlidingWindow, FixedWindow) mapped onto appropriate quota
+//! constructions.
 use std::{
     hash::Hash,
     net::{IpAddr, SocketAddr},
@@ -20,6 +28,8 @@ use tracing;
 
 use crate::config::models::{MissingKeyPolicy, RateLimitAlgorithm, RateLimitBy, RateLimitConfig};
 
+/// Internal wrapper bundling a concrete governor limiter instance with
+/// response metadata (status + message) and behaviour on missing key.
 #[derive(Clone)]
 pub struct LimiterWrapper<RL> {
     pub limiter: RL,
@@ -31,8 +41,11 @@ pub struct LimiterWrapper<RL> {
 pub type DirectRateLimiterImpl = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
 pub type KeyedRateLimiterImpl<K> = RateLimiter<K, DefaultKeyedStateStore<K>, DefaultClock>;
 
+/// Non‑keyed (global per route) limiter variant.
 pub type RouteSpecificLimiter = LimiterWrapper<DirectRateLimiterImpl>;
+/// Per‑client‑IP keyed limiter variant.
 pub type IpLimiter = LimiterWrapper<KeyedRateLimiterImpl<IpAddr>>;
+/// Per‑header‑value keyed limiter variant.
 pub type HeaderLimiter = LimiterWrapper<KeyedRateLimiterImpl<String>>;
 
 // --- LimiterWrapper Implementations ---
@@ -83,6 +96,7 @@ impl HeaderLimiter {
 // --- RouteRateLimiter Enum ---
 // This enum dispatches to the correct type of limiter based on configuration.
 // It holds an Arc to the LimiterWrapper, allowing shared state for the same route.
+/// Discriminated union over supported limiter types.
 #[derive(Clone)]
 pub enum RouteRateLimiter {
     Route(Arc<RouteSpecificLimiter>),
@@ -95,6 +109,7 @@ pub enum RouteRateLimiter {
 
 impl RouteRateLimiter {
     /// Creates a new `RouteRateLimiter` based on the provided `RateLimitConfig`.
+    /// Build a limiter from a `RateLimitConfig` definition.
     pub fn new(config: &RateLimitConfig) -> Result<Self, String> {
         let period_duration = humantime::parse_duration(&config.period).map_err(|e| {
             format!(
@@ -190,6 +205,7 @@ impl RouteRateLimiter {
 
     /// Checks the rate limit for the given request.
     /// Extracts the appropriate key based on the limiter type and calls the corresponding check method.
+    /// Enforce this limiter against an HTTP request.
     pub fn check<T>(&self, req: &Request<T>) -> Result<(), Box<AxumResponse>> {
         match self {
             RouteRateLimiter::Route(limiter) => limiter.check_route(),

@@ -1,3 +1,10 @@
+//! Backend primitives: URL validation and health tracking.
+//!
+//! Provides lightweight types for representing backend targets (`BackendUrl`)
+//! and tracking their health status (`BackendHealth`) with atomic counters for
+//! consecutive successes / failures. These counters enable threshold‑based
+//! hysteresis in the health checker so that transient errors do not cause
+//! flapping availability states.
 use std::{
     fmt,
     str::FromStr,
@@ -24,7 +31,7 @@ pub enum BackendError {
 /// Result type for backend operations
 pub type BackendResult<T> = Result<T, BackendError>;
 
-/// A type-safe representation of a backend URL
+/// Type‑safe representation of a backend URL (basic scheme validation only).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BackendUrl {
     /// The underlying URL as a string
@@ -34,7 +41,7 @@ pub struct BackendUrl {
 }
 
 impl BackendUrl {
-    /// Creates a new BackendUrl if the provided string is a valid URL
+    /// Create a new `BackendUrl` if the string begins with `http://` or `https://`.
     ///
     /// # Arguments
     /// * `url` - The URL string to validate and wrap
@@ -88,7 +95,7 @@ impl fmt::Display for BackendUrl {
     }
 }
 
-/// Tracks the health status of a backend
+/// Tracks backend health plus consecutive success/failure counters.
 #[derive(Debug)]
 pub struct BackendHealth {
     target_url: BackendUrl,
@@ -101,7 +108,7 @@ pub struct BackendHealth {
 }
 
 impl BackendHealth {
-    /// Creates a new BackendHealth instance
+    /// Construct a new health record (initially healthy).
     ///
     /// # Arguments
     /// * `target` - The backend URL this health status is tracking
@@ -117,7 +124,7 @@ impl BackendHealth {
         }
     }
 
-    /// Get the current health status
+    /// Read current health status.
     ///
     /// # Returns
     /// The current health status (Healthy or Unhealthy)
@@ -130,7 +137,7 @@ impl BackendHealth {
         }
     }
 
-    /// Mark the backend as healthy and reset failure count
+    /// Mark healthy (resets failure counter).
     pub fn mark_healthy(&self) {
         // Use Release ordering for updates to ensure visibility to other threads
         self.status.store(HEALTH_STATUS_HEALTHY, Ordering::Release);
@@ -139,7 +146,7 @@ impl BackendHealth {
         set_backend_health_status(self.target_url.as_str(), true);
     }
 
-    /// Mark the backend as unhealthy and reset success count
+    /// Mark unhealthy (resets success counter).
     pub fn mark_unhealthy(&self) {
         // Use Release ordering for updates to ensure visibility to other threads
         self.status
@@ -149,12 +156,12 @@ impl BackendHealth {
         set_backend_health_status(self.target_url.as_str(), false);
     }
 
-    /// Get the number of consecutive successful health checks
+    /// Number of recent consecutive successes.
     pub fn consecutive_successes(&self) -> u32 {
         self.consecutive_successes.load(Ordering::Relaxed)
     }
 
-    /// Get the number of consecutive failed health checks
+    /// Number of recent consecutive failures.
     pub fn consecutive_failures(&self) -> u32 {
         self.consecutive_failures.load(Ordering::Relaxed)
     }

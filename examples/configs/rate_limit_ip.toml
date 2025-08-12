@@ -1,0 +1,16 @@
+# Rate limit by IP scenario
+listen_addr = "127.0.0.1:8083"
+
+[health_check]
+enabled = false
+
+[routes."/rl/"]
+type = "static"
+root = "examples/static"
+
+  [routes."/rl/".rate_limit]
+  by = "ip"
+  requests = 3
+  period = "2s"
+  status_code = 429
+  message = "Too Many Requests"

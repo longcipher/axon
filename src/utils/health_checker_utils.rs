@@ -1,3 +1,9 @@
+//! Helper utilities for managing health checker tasks and summarizing backend health.
+//!
+//! This module offers small orchestration helpers that sit above the raw
+//! [`HealthChecker`] adapter: spawning tasks, building futures for embedding in
+//! supervisor logic, validating configuration fields early, and aggregating
+//! health status snapshots for logging / dashboards.
 use std::sync::Arc;
 
 use tokio::task::JoinHandle;
@@ -7,7 +13,7 @@ use crate::{
     ports::http_client::HttpClient,
 };
 
-/// Helper function to spawn a new health checker task
+/// Spawn a detached tokio task running the health checker loop if enabled.
 pub fn spawn_health_checker_task(
     gateway_service: Arc<GatewayService>,
     http_client: Arc<dyn HttpClient>,
@@ -37,7 +43,7 @@ pub fn spawn_health_checker_task(
     })
 }
 
-/// Helper function to create a health checker task without immediately spawning it
+/// Prepare a future for the health checker without spawning it (caller decides runtime context).
 pub async fn create_health_checker_task(
     gateway_service: Arc<GatewayService>,
     http_client: Arc<dyn HttpClient>,
@@ -64,7 +70,7 @@ pub async fn create_health_checker_task(
     }
 }
 
-/// Validate health check configuration
+/// Validate health check related configuration parameters (sanity checks only).
 pub fn validate_health_check_config(config: &ServerConfig) -> eyre::Result<()> {
     if !config.health_check.enabled {
         return Ok(());
@@ -93,7 +99,7 @@ pub fn validate_health_check_config(config: &ServerConfig) -> eyre::Result<()> {
     Ok(())
 }
 
-/// Get health check status for all backends
+/// Collect (backend_url, healthy) pairs.
 pub async fn get_backend_health_status(gateway_service: &GatewayService) -> Vec<(String, bool)> {
     let mut status = Vec::new();
 
@@ -108,13 +114,13 @@ pub async fn get_backend_health_status(gateway_service: &GatewayService) -> Vec<
     status
 }
 
-/// Check if any backends are healthy
+/// Return true if at least one backend is healthy.
 pub async fn has_healthy_backends(gateway_service: &GatewayService) -> bool {
     let status = get_backend_health_status(gateway_service).await;
     status.iter().any(|(_, is_healthy)| *is_healthy)
 }
 
-/// Get count of healthy vs unhealthy backends
+/// Count healthy vs unhealthy backends.
 pub async fn get_backend_health_summary(gateway_service: &GatewayService) -> (usize, usize) {
     let status = get_backend_health_status(gateway_service).await;
     let healthy_count = status.iter().filter(|(_, is_healthy)| *is_healthy).count();
@@ -122,7 +128,7 @@ pub async fn get_backend_health_summary(gateway_service: &GatewayService) -> (us
     (healthy_count, unhealthy_count)
 }
 
-/// Log health check summary
+/// Emit a concise health summary log line (warns if any unhealthy or none configured).
 pub async fn log_health_summary(gateway_service: &GatewayService, log_prefix: &str) {
     let (healthy, unhealthy) = get_backend_health_summary(gateway_service).await;
     let total = healthy + unhealthy;

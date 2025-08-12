@@ -2,7 +2,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rand::Rng;
 
-/// Trait defining the interface for load balancing strategies
+/// Trait defining the interface for load balancing strategies.
+///
+/// A strategy is stateless or internally synchronized and can be shared across
+/// threads. Implementors should avoid heavy contention in `select_target` as it
+/// runs in the request hot path.
 pub trait LoadBalancingStrategy: Send + Sync + 'static {
     /// Select a target from a list of targets
     fn select_target(&self, targets: &[String]) -> Option<String>;
@@ -15,7 +19,9 @@ pub trait LoadBalancingStrategy: Send + Sync + 'static {
     }
 }
 
-/// Round-robin load balancing strategy
+/// Round-robin load balancing strategy.
+///
+/// Uses an atomic counter cycling through the slice index space.
 pub struct RoundRobinStrategy {
     counter: AtomicUsize,
 }
@@ -45,7 +51,9 @@ impl LoadBalancingStrategy for RoundRobinStrategy {
     }
 }
 
-/// Random selection load balancing strategy
+/// Random selection load balancing strategy.
+///
+/// Utilizes the thread‑local `rand::rng()` to pick an index uniformly.
 pub struct RandomStrategy;
 
 impl Default for RandomStrategy {
@@ -71,7 +79,7 @@ impl LoadBalancingStrategy for RandomStrategy {
     }
 }
 
-/// Factory for creating load balancing strategies from configuration
+/// Factory for creating load balancing strategies from configuration values.
 pub struct LoadBalancerFactory;
 
 impl LoadBalancerFactory {

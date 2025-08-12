@@ -32,7 +32,7 @@ src/
 use eyre::{Result, WrapErr};
 
 fn load_config() -> Result<Config> {
-    std::fs::read_to_string("config.yaml")
+    std::fs::read_to_string("config.toml")
         .wrap_err("Failed to read config file")?;
     // ... more processing
 }
@@ -283,7 +283,7 @@ fn record_request_metrics(path: &str, method: &str, status: u16, duration: Durat
 - Update models in `config/models.rs`
 - Add validation in `config/validation.rs`
 - Update example configuration files
-- Test with `axon validate --config config.yaml`
+- Test with `axon validate --config config.toml`
 
 ### 2. Adding New Features
 1. Define the port (trait) in `ports/`
