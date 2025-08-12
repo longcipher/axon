@@ -1,376 +1,78 @@
-# Axon API Gateway - AI Coding Agent Instructions
+## Axon AI Coding Agent Quick Guide
 
-Welcome to the Axon API Gateway project! This document provides comprehensive guidance for AI coding agents working on this codebase. Axon is a high-performance API gateway and reverse proxy built in Rust using hexagonal architecture.
+Purpose: High‑performance API gateway & reverse proxy (Rust) using strict hexagonal architecture (core ↔ ports ↔ adapters). Keep boundaries clean and add value without leaking infrastructure concerns into `core/`.
 
-## 🏗️ Architecture Overview
-
-Axon follows **hexagonal architecture** (ports and adapters) with clean separation of concerns:
-
+### 1. Layout & Responsibilities
 ```
-src/
-├── core/           # Domain logic (business rules)
-├── ports/          # Interfaces (traits defining contracts) 
-├── adapters/       # Implementations (concrete adapters for ports)
-├── config/         # Configuration handling with validation
-└── utils/          # Shared utilities and helpers
+core/   domain logic (routing, load balancing, rate limiting)
+ports/  traits (HttpClient, FileSystem, etc.) consumed by core
+adapters/ concrete impls (HTTP handler, client, fs, health checker, http3, ws)
+config/ models + loading + validation
+utils/  infra helpers (graceful shutdown, trackers)
+metrics.rs central metric names + helper fns
 ```
-
-### Core Principles
-- **Dependency Inversion**: Core domain depends only on ports (traits), not concrete implementations
-- **Testability**: Core logic can be tested without external dependencies
-- **Flexibility**: Adapters can be swapped without changing core logic
-- **Clear Boundaries**: Each layer has well-defined responsibilities
-
-## 📦 Key Dependencies & Their Usage
-
-### Error Handling: `eyre` (NOT `anyhow`)
-- **Always use `eyre::Result<T>` for fallible functions**
-- **Use `.wrap_err()` and `.wrap_err_with()` for context**
-- **Never use `unwrap()` or `expect()` in production code**
-
-```rust
-use eyre::{Result, WrapErr};
-
-fn load_config() -> Result<Config> {
-    std::fs::read_to_string("config.toml")
-        .wrap_err("Failed to read config file")?;
-    // ... more processing
-}
-```
-
-### Concurrent Collections: `scc::HashMap` (NOT `dashmap`)
-- **Use `scc::HashMap` for thread-safe key-value storage**
-- **Iteration requires careful handling of async contexts**
-- **Always handle potential lock contention gracefully**
-
-```rust
-use scc::HashMap as ConcurrentMap;
-
-// ✅ Correct usage
-let map: ConcurrentMap<String, Backend> = ConcurrentMap::new();
-
-// Insertion
-map.insert("key".to_string(), backend);
-
-// Async-safe iteration
-map.scan_async(|key, value| {
-    // Process entries
-    key.clone()
-}).await;
-```
-
-### Configuration: `config` crate
-- **Support YAML, JSON, and TOML formats**
-- **Use builder pattern for complex configurations**
-- **Always validate configurations before use**
-
-```rust
-use config::{Config, ConfigError, Environment, File};
-
-let settings = Config::builder()
-    .add_source(File::with_name("config"))
-    .add_source(Environment::with_prefix("AXON"))
-    .build()?;
-```
-
-### HTTP Framework: `axum` + `hyper`
-- **Use `axum::body::Body` as the standard body type**
-- **Implement `IntoResponse` for custom response types**
-- **Handle errors with proper status codes**
-
-## 🔧 Code Patterns & Best Practices
-
-### 1. Port Implementation Pattern
-When implementing a port (trait), follow this pattern:
-
-```rust
-// Port definition (in ports/)
-pub trait HttpClient: Send + Sync + 'static {
-    async fn send_request(&self, request: Request<Body>) -> Result<Response<Body>, HttpClientError>;
-}
-
-// Adapter implementation (in adapters/)
-pub struct HttpClientAdapter {
-    client: hyper::Client<HttpsConnector<HttpConnector>>,
-}
-
-impl HttpClient for HttpClientAdapter {
-    async fn send_request(&self, request: Request<Body>) -> Result<Response<Body>, HttpClientError> {
-        self.client.request(request)
-            .await
-            .map_err(HttpClientError::ConnectionError)
-    }
-}
-```
-
-### 2. Configuration Validation Pattern
-All configuration should be validated before use:
-
-```rust
-impl ServerConfig {
-    pub fn validate(&self) -> Result<(), Vec<ValidationError>> {
-        let mut errors = Vec::new();
-        
-        // Validate listen address
-        if let Err(e) = self.listen_addr.parse::<SocketAddr>() {
-            errors.push(ValidationError::new("Invalid listen address"));
-        }
-        
-        if errors.is_empty() { Ok(()) } else { Err(errors) }
-    }
-}
-```
-
-### 3. Error Handling Pattern
-Consistent error handling across the codebase:
-
-```rust
-use eyre::{Result, WrapErr};
-use thiserror::Error;
-
-#[derive(Error, Debug)]
-pub enum GatewayError {
-    #[error("Configuration error: {0}")]
-    Config(String),
-    #[error("Network error: {0}")]
-    Network(String),
-}
-
-async fn proxy_request(req: Request<Body>) -> Result<Response<Body>> {
-    let backend = select_backend(&req)
-        .wrap_err("Failed to select backend for request")?;
-        
-    send_to_backend(backend, req)
-        .await
-        .wrap_err_with(|| format!("Failed to proxy to backend {}", backend.url))
-}
-```
-
-### 4. Resource Management Pattern
-Always use RAII and proper cleanup:
-
-```rust
-pub struct ConnectionTracker {
-    active_connections: Arc<AtomicUsize>,
-}
-
-impl ConnectionTracker {
-    pub fn track_connection(&self) -> ConnectionGuard {
-        self.active_connections.fetch_add(1, Ordering::SeqCst);
-        ConnectionGuard { tracker: self.active_connections.clone() }
-    }
-}
-
-pub struct ConnectionGuard {
-    tracker: Arc<AtomicUsize>,
-}
-
-impl Drop for ConnectionGuard {
-    fn drop(&mut self) {
-        self.tracker.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-```
-
-## 🧪 Testing Guidelines
-
-### Unit Testing Core Logic
-Test domain logic without external dependencies:
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[tokio::test]
-    async fn test_load_balancer_round_robin() {
-        let backends = vec!["http://api1", "http://api2"];
-        let lb = RoundRobinStrategy::new();
-        
-        assert_eq!(lb.select(&backends), Some("http://api1"));
-        assert_eq!(lb.select(&backends), Some("http://api2"));
-        assert_eq!(lb.select(&backends), Some("http://api1"));
-    }
-}
-```
-
-### Integration Testing with Adapters
-Use real implementations for integration tests:
-
-```rust
-#[tokio::test]
-async fn test_gateway_proxy() {
-    let config = ServerConfig::default();
-    let gateway = GatewayService::new(config);
-    
-    let request = Request::get("http://test.local/api/v1")
-        .body(Body::empty()).unwrap();
-        
-    let response = gateway.handle_request(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-}
-```
-
-## 🚀 Performance Considerations
-
-### 1. Connection Pooling
-Reuse HTTP connections for better performance:
-
-```rust
-let https_connector = HttpsConnectorBuilder::new()
-    .with_native_roots()
-    .https_or_http()
-    .enable_http1()
-    .enable_http2()
-    .build();
-
-let client = hyper::Client::builder()
-    .pool_max_idle_per_host(20)
-    .pool_idle_timeout(Duration::from_secs(30))
-    .build(https_connector);
-```
-
-### 2. Async Considerations
-- Prefer `Arc<Mutex<_>>` over `Rc<RefCell<_>>` for shared state
-- Use `tokio::spawn` for CPU-bound tasks
-- Avoid blocking operations in async contexts
-
-### 3. Memory Management
-- Use streaming for large request/response bodies
-- Implement proper backpressure mechanisms
-- Monitor memory usage in long-running processes
-
-## 🔍 Debugging & Observability
-
-### Structured Logging
-Use `tracing` for structured logging:
-
-```rust
-use tracing::{info, warn, error, instrument};
-
-#[instrument(skip(request))]
-async fn handle_request(request: Request<Body>) -> Result<Response<Body>> {
-    info!("Processing request to {}", request.uri());
-    
-    match proxy_request(request).await {
-        Ok(response) => {
-            info!("Request completed successfully");
-            Ok(response)
-        }
-        Err(e) => {
-            error!("Request failed: {:?}", e);
-            Err(e)
-        }
-    }
-}
-```
-
-### Metrics Collection
-Implement metrics for monitoring:
-
-```rust
-use metrics::{counter, histogram, gauge};
-
-fn record_request_metrics(path: &str, method: &str, status: u16, duration: Duration) {
-    counter!("axon_requests_total", "path" => path, "method" => method, "status" => status.to_string()).increment(1);
-    histogram!("axon_request_duration_seconds", "path" => path).record(duration.as_secs_f64());
-}
-```
-
-## 🛠️ Development Workflow
-
-### 1. Configuration Changes
-- Update models in `config/models.rs`
-- Add validation in `config/validation.rs`
-- Update example configuration files
-- Test with `axon validate --config config.toml`
-
-### 2. Adding New Features
-1. Define the port (trait) in `ports/`
-2. Implement the adapter in `adapters/`
-3. Integrate in core logic
-4. Add comprehensive tests
-5. Update documentation
-
-### 3. Error Handling Updates
-1. Define new error types in relevant modules
-2. Use `thiserror` for error definitions
-3. Add context with `eyre::WrapErr`
-4. Ensure proper error propagation
-
-## ⚡ Common Patterns to Follow
-
-### Configuration Loading
-```rust
-pub fn load_config(path: &str) -> Result<ServerConfig> {
-    let settings = Config::builder()
-        .add_source(File::with_name(path))
-        .add_source(Environment::with_prefix("AXON"))
-        .build()
-        .wrap_err("Failed to build configuration")?;
-        
-    let config: ServerConfig = settings
-        .try_deserialize()
-        .wrap_err("Failed to deserialize configuration")?;
-        
-    config.validate()
-        .map_err(|errors| eyre::eyre!("Configuration validation failed: {:?}", errors))?;
-        
-    Ok(config)
-}
-```
-
-### Graceful Shutdown
-```rust
-pub struct GracefulShutdown {
-    shutdown_tx: broadcast::Sender<()>,
-}
-
-impl GracefulShutdown {
-    pub async fn shutdown(&self) {
-        info!("Initiating graceful shutdown");
-        let _ = self.shutdown_tx.send(());
-        
-        // Wait for active connections to finish
-        while self.active_connections.load(Ordering::SeqCst) > 0 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        
-        info!("Graceful shutdown completed");
-    }
-}
-```
-
-## 📚 Key Files to Understand
-
-- **`src/core/gateway.rs`**: Main service orchestration logic
-- **`src/config/models.rs`**: Complete configuration structure
-- **`src/adapters/http_handler.rs`**: HTTP request processing
-- **`src/ports/`**: All trait definitions and contracts
-- **`src/main.rs`**: Application bootstrapping and CLI
-
-## 🚨 Critical Don'ts
-
-- ❌ Don't use `anyhow` (use `eyre` instead)
-- ❌ Don't use `dashmap` (use `scc::HashMap` instead)
-- ❌ Don't use `unwrap()` or `expect()` without very good reason
-- ❌ Don't break hexagonal architecture boundaries
-- ❌ Don't add dependencies to `core/` that aren't ports
-- ❌ Don't ignore configuration validation
-- ❌ Don't write blocking code in async contexts
-- ❌ Don't forget error context with `.wrap_err()`
-
-## ✅ Critical Do's
-
-- ✅ Always use `eyre::Result<T>` for fallible functions
-- ✅ Add `.wrap_err()` context to all error chains
-- ✅ Validate all configuration before use
-- ✅ Follow hexagonal architecture principles
-- ✅ Write comprehensive tests for core logic
-- ✅ Use structured logging with `tracing`
-- ✅ Handle graceful shutdown properly
-- ✅ Implement proper metrics collection
-
----
-
-Remember: Axon prioritizes reliability, performance, and maintainability. Always consider the impact of changes on production systems and follow the established patterns for consistency.
+Rules: core depends ONLY on ports; adapters depend on core+ports; no adapter → adapter tight coupling unless via ports.
+
+### 2. Key Conventions
+- Errors: always `eyre::Result<T>` + `.wrap_err()` for context. Never `unwrap()` in non-test code.
+- Concurrency: prefer `scc::HashMap` for shared mutable maps; avoid `dashmap` / manual locks unless justified.
+- Bodies: use `axum::body::Body` (alias `AxumBody`). HTTP/3 adapter streams request & response bodies; don’t re-buffer downstream.
+- Metrics: update via helpers in `metrics.rs` (request + backend counters/histograms). All request metrics now include a `protocol` label (`http`, `http3`). Keep label cardinality low (path, method, status, backend, protocol).
+- Configuration: add fields in `config/models.rs`, validate in `config/validation.rs`, and extend examples under `examples/configs/`.
+
+### 3. Development Workflow
+- Format: `just format` (taplo + rustfmt nightly)
+- Lint: `just lint` (clippy denies `unwrap_used` & warns become errors)
+- Test: `just test` (unit + integration). Feature HTTP/3: `cargo test --features http3 --test http3_basic`.
+- Run: `cargo run -- serve --config config.toml`
+- Validate config: `cargo run -- validate --config <file>`
+- Smoke scenarios: `just example-run name=static_files` (scripts in `examples/scripts/`).
+
+### 4. Adding a Feature
+1. Define trait in `ports/` if new external interaction.
+2. Implement adapter in `adapters/`; keep constructor minimal & inject dependencies (Arc where shared).
+3. Integrate in `core/` (call only the trait, not concrete type).
+4. Extend config (models + validation + example file).
+5. Add metrics (reuse existing families or add constant + helper in `metrics.rs`).
+6. Write unit tests for core logic; add integration test if IO involved.
+
+### 5. HTTP/3 Status (feature `http3`)
+- Listener: `adapters/http3.rs` via Quinn + h3, uses existing `HttpHandler`.
+- Request bodies: streamed into Axum handler via mpsc + `from_stream` (do NOT revert to full buffering).
+- Graceful shutdown: select on broadcast token; ensure any new loops also observe shutdown.
+- When expanding: keep protocol-specific logic inside adapter, surface only normalized request to handler.
+
+### 6. Metrics Patterns
+- Use helper: `increment_request_total(path, method, status, protocol)` & `record_request_duration(path, method, protocol, duration)`.
+- Backend metrics: add protocol label ONLY if it adds diagnostic value; avoid high-cardinality labels (no raw query strings, client IPs).
+- If new histogram: choose sane buckets (exported centrally) instead of ad‑hoc inline definitions.
+
+### 7. Error & Resource Patterns
+- Provide context at each boundary crossing (IO, parse, config) with `.wrap_err("action object")`.
+- Use RAII guards (`connection_tracker`) for counts; never manually decrement counters on multiple return paths.
+
+### 8. Rate Limiting & LB
+- Rate limiter logic in `core/rate_limiter.rs`; algorithms keyed by route config. Add new algorithm behind an enum variant + validation.
+- Load balancer strategies live in `core/load_balancer.rs` – keep selection pure & side‑effect free.
+
+### 9. Hot Config Reload
+- File watcher triggers reload; validation must succeed before swap. If you add new config fields, ensure default/backward compatibility so reloads don’t fail unexpectedly.
+
+### 10. DO / DON’T (Project Specific)
+DO: keep adapter logic thin; add metrics via helpers; stream large bodies; prefer structured logs with spans.  
+DON’T: add external deps to `core/`; introduce blocking IO in async paths; create new metrics with unbounded label values; bypass validation; leak adapter types across ports.
+
+### 11. Quick File Landmarks
+`src/main.rs` (boot + CLI), `core/gateway.rs` (request orchestration), `adapters/http_handler.rs` (HTTP/1/2 path), `adapters/http3.rs` (QUIC listener), `metrics.rs` (all metric façade), `config/loader.rs` (multi-format load + env merge), `utils/graceful_shutdown.rs` (broadcast token lifecycle).
+
+### 12. Checklist Before PR
+- cargo fmt / clippy clean (`just lint`)
+- No `unwrap()` added
+- Config & examples updated (if feature)
+- Tests cover new logic (happy + 1 edge case)
+- Metrics labels reviewed for cardinality
+- Graceful shutdown path unaffected (or extended) 
+
+If uncertain about an addition, prefer a trait in `ports` + adapter; ask (or leave a comment) when crossing a boundary.
+
+Happy hacking — keep it lean, observable, and safe.
