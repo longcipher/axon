@@ -32,6 +32,10 @@ pub const AXON_BACKEND_REQUESTS_TOTAL: &str = "axon_backend_requests_total";
 pub const AXON_BACKEND_REQUEST_DURATION_SECONDS: &str = "axon_backend_request_duration_seconds";
 pub const AXON_ACTIVE_CONNECTIONS: &str = "axon_active_connections";
 pub const AXON_ACTIVE_REQUESTS: &str = "axon_active_requests";
+pub const AXON_WEBSOCKET_CONNECTIONS_TOTAL: &str = "axon_websocket_connections_total";
+pub const AXON_WEBSOCKET_MESSAGES_TOTAL: &str = "axon_websocket_messages_total"; // labels: direction, opcode
+pub const AXON_WEBSOCKET_BYTES_TOTAL: &str = "axon_websocket_bytes_total"; // labels: direction
+pub const AXON_WEBSOCKET_CLOSE_CODES_TOTAL: &str = "axon_websocket_close_codes_total"; // labels: code
 
 /// Storage for backend health status gauges
 pub static BACKEND_HEALTH_GAUGES: Lazy<Mutex<HashMap<String, f64>>> = Lazy::new(|| {
@@ -68,6 +72,10 @@ pub static BACKEND_HEALTH_GAUGES: Lazy<Mutex<HashMap<String, f64>>> = Lazy::new(
         AXON_ACTIVE_REQUESTS,
         "Number of currently active requests being processed."
     );
+    describe_counter!(AXON_WEBSOCKET_CONNECTIONS_TOTAL, Unit::Count, "Total WebSocket connections established.");
+    describe_counter!(AXON_WEBSOCKET_MESSAGES_TOTAL, Unit::Count, "Total WebSocket messages proxied (by direction/opcode).");
+    describe_counter!(AXON_WEBSOCKET_BYTES_TOTAL, Unit::Bytes, "Total WebSocket payload bytes proxied (by direction).");
+    describe_counter!(AXON_WEBSOCKET_CLOSE_CODES_TOTAL, Unit::Count, "WebSocket close frames observed (by code).");
 
     Mutex::new(HashMap::new())
 });
@@ -208,6 +216,24 @@ pub fn init_metrics() -> eyre::Result<()> {
 
     tracing::info!("Axon metrics system initialized successfully");
     Ok(())
+}
+
+/// Increment WebSocket connection counter.
+pub fn increment_ws_connections() { counter!(AXON_WEBSOCKET_CONNECTIONS_TOTAL).increment(1); }
+
+/// Record a WebSocket message (direction ingress/egress, opcode string).
+pub fn increment_ws_message(direction: &str, opcode: &str) {
+    counter!(AXON_WEBSOCKET_MESSAGES_TOTAL, "direction" => direction.to_string(), "opcode" => opcode.to_string()).increment(1);
+}
+
+/// Add bytes transferred for WebSocket payload.
+pub fn add_ws_bytes(direction: &str, bytes: usize) {
+    counter!(AXON_WEBSOCKET_BYTES_TOTAL, "direction" => direction.to_string()).increment(bytes as u64);
+}
+
+/// Increment close code occurrence.
+pub fn increment_ws_close_code(code: u16) {
+    counter!(AXON_WEBSOCKET_CLOSE_CODES_TOTAL, "code" => code.to_string()).increment(1);
 }
 
 /// Collect a snapshot of gauge values used for ad‑hoc exports.

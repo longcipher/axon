@@ -19,6 +19,7 @@ Ready-to-run scenarios live in `examples/`:
 - Rate limit by IP: `examples/configs/rate_limit_ip.toml` (test: `examples/scripts/rate_limit_ip.sh`)
 - Health checks + LB: `examples/configs/health_checks.toml` (test: `examples/scripts/health_checks.sh`)
 - Path rewrite (proxy): `examples/configs/path_rewrite.toml` (test: `examples/scripts/path_rewrite.sh`)
+- WebSocket echo: `examples/configs/ws_echo.toml` (tests: `examples/scripts/ws_echo.sh`, `ws_binary.sh`, `ws_ping_pong.sh`, `ws_close.sh`, `ws_large_payload.sh`)
 
 Validate a config:
 
@@ -38,7 +39,7 @@ A high-performance API gateway and reverse proxy built in Rust, implementing hex
 
 ## Features
 
-- Protocols: HTTP/1.1 and HTTP/2 (via Hyper/Rustls); WebSocket proxying is planned
+- Protocols: HTTP/1.1 and HTTP/2 (via Hyper/Rustls); WebSocket proxying
 - Static file serving with configurable directories
 - HTTP redirects with custom status codes
 - Load balancing (round-robin and random strategies)
@@ -71,7 +72,7 @@ listen_addr = "127.0.0.1:3000"
 
 [protocols]
 http2_enabled = true
-websocket_enabled = true # planned
+websocket_enabled = true # enable websocket proxy
 http3_enabled = false    # not implemented yet
 
 [health_check]
@@ -114,6 +115,10 @@ Axon exposes a minimal text exposition at `/metrics` (Prometheus scrapeable). Ke
 | axon_backend_health_status | gauge | backend | 1 healthy / 0 unhealthy |
 | axon_active_connections | gauge | - | Open connections |
 | axon_active_requests | gauge | - | In‑flight requests |
+| axon_websocket_connections_total | counter | - | Total WebSocket connections established |
+| axon_websocket_messages_total | counter | direction, opcode | WebSocket messages proxied |
+| axon_websocket_bytes_total | counter | direction | WebSocket payload bytes proxied |
+| axon_websocket_close_codes_total | counter | code | WebSocket close frames observed |
 
 ## Rate Limiting
 
@@ -169,11 +174,41 @@ RUST_LOG=info ./target/release/axon serve --config config.toml
 
 ## Roadmap
 
-- WebSocket proxying
+- Stabilize WebSocket advanced features (compression, fragmentation, richer metrics)
 - HTTP/3 (QUIC) support
 - Pluggable authentication / authz middlewares
 - Advanced load balancing (least‑requests, EWMA)
 - Distributed rate limiting backend
+
+## Current WebSocket Limitations
+
+The WebSocket proxy is functional (upgrade, subprotocol negotiation, bidirectional text/binary frame forwarding, close propagation) but not yet feature‑complete. Remaining gaps before declaring full production stability:
+
+Protocol features:
+
+- No permessage-deflate (compression) negotiation yet
+- Fragmented (continuation) frames not explicitly tested (forwarded transparently by tungstenite but unverified)
+- Ping/Pong pass through but no active keepalive or timeout logic
+- Large payload paths (>125 bytes using extended lengths 126/127) not covered by tests
+
+Observability & control:
+
+- Missing dedicated WebSocket metrics (connections, messages, bytes, close codes)
+- No configurable idle timeout / max connection count / per-session duration limit
+
+Backpressure & resource safety:
+
+- No explicit slow consumer handling or queue size limits
+
+Security / policy:
+
+- Origin validation & auth/ACL hooks not yet integrated into upgrade path
+
+Testing:
+
+- Additional scripted tests (binary frames, ping/pong timing, large frames, close code mapping) are being added incrementally
+
+Until these are addressed, external integrations should treat the WebSocket layer as stable for basic echo / streaming scenarios but subject to change for advanced features.
 
 ## Contributing
 

@@ -49,8 +49,15 @@ jobs:
 
       - name: Run examples scripts
         run: |
+          python3 --version
+          which python3
           chmod +x examples/scripts/*.sh
           examples/scripts/run_all.sh
+          # Explicitly rerun websocket scripts for dedicated logs grouping
+          bash examples/scripts/ws_binary.sh
+          bash examples/scripts/ws_ping_pong.sh
+          bash examples/scripts/ws_close.sh
+          bash examples/scripts/ws_large_payload.sh
 
       - name: Upload logs on failure
         if: ${{ failure() }}

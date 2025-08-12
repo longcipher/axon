@@ -497,6 +497,12 @@ pub enum RouteConfig {
         /// Maximum message size (in bytes)
         #[serde(default)]
         max_message_size: Option<usize>,
+    /// Idle timeout in seconds (closes connection if no frame seen in either direction)
+    #[serde(default)]
+    idle_timeout_secs: Option<u64>,
+    /// Allowed subprotocols (Sec-WebSocket-Protocol negotiation)
+    #[serde(default)]
+    subprotocols: Option<Vec<String>>,
     },
 }
 

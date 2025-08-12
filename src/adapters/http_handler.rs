@@ -28,6 +28,7 @@ use axum::{
 use eyre::{Result, WrapErr};
 use hyper::{Request, Response};
 use tracing::Instrument;
+// WebSocket proxy support (stub implementation)
 use uuid::Uuid;
 
 use crate::{
@@ -180,7 +181,7 @@ impl HttpHandler {
                     return self.handle_proxy_request(req, client_addr).await;
                 }
                 RouteConfig::Websocket { .. } => {
-                    return self.handle_proxy_request(req, client_addr).await;
+                    return self.handle_websocket(req).await;
                 }
                 RouteConfig::Redirect {
                     target,
@@ -397,6 +398,169 @@ impl HttpHandler {
             .status(StatusCode::NOT_FOUND)
             .body(AxumBody::from("Static route not found"))
             .wrap_err("Failed to build 404 response")
+    }
+
+    /// Handle a WebSocket route: perform upgrade, connect to backend (ws/wss), and shuttle frames both ways.
+    async fn handle_websocket(&self, mut req: Request<AxumBody>) -> Result<Response<AxumBody>, eyre::Error> {
+    use http::header::{UPGRADE, CONNECTION, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_PROTOCOL};
+    use tokio_tungstenite::tungstenite::{protocol::Message, protocol::Role};
+    use futures_util::{StreamExt, SinkExt};
+    use sha1::Digest;
+
+        // Basic validation
+        if req.headers().get(UPGRADE).and_then(|v| v.to_str().ok()).map(|v| v.to_ascii_lowercase()) != Some("websocket".to_string()) {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(AxumBody::from("Missing or invalid Upgrade: websocket"))
+                .wrap_err("Bad WS upgrade request");
+        }
+
+        // Extract route & config
+        let path = req.uri().path().to_string();
+        let gateway = self.current_gateway()?;
+        let (route_prefix, route_config) = gateway
+            .find_matching_route(&path)
+            .ok_or_else(|| eyre::eyre!("No matching WS route"))?;
+        let (target, path_rewrite, max_frame_size, max_message_size, idle_timeout_secs, subprotocols) = match route_config {
+            RouteConfig::Websocket { target, path_rewrite, max_frame_size, max_message_size, idle_timeout_secs, subprotocols, .. } => (target, path_rewrite, max_frame_size, max_message_size, idle_timeout_secs, subprotocols),
+            _ => return Err(eyre::eyre!("Route not websocket")),
+        };
+
+        // Build backend URL
+        let remaining_path = path.strip_prefix(&route_prefix).unwrap_or(&path);
+        let rewritten_path = if let Some(rewrite) = path_rewrite.as_ref() {
+            let rp = remaining_path.trim_start_matches('/');
+            if rewrite == "/" { if rp.is_empty() { "/".to_string() } else { format!("/{rp}") } } else if rp.is_empty() { rewrite.clone() } else { format!("{}/{}", rewrite.trim_end_matches('/'), rp) }
+        } else { path.clone() };
+        let scheme = if target.starts_with("https://") { "wss" } else { "ws" };
+        let backend_base = target.trim_end_matches('/').replace("http://", "").replace("https://", "");
+        let backend_url = format!("{}://{}{}", scheme, backend_base, rewritten_path);
+        tracing::Span::current().record("backend.url", &backend_url);
+
+        // Prepare switching protocol response
+        let key = req.headers().get(SEC_WEBSOCKET_KEY).ok_or_else(|| eyre::eyre!("Missing Sec-WebSocket-Key"))?;
+        let accept_key = {
+            use base64::engine::general_purpose::STANDARD as b64;
+            use base64::Engine;
+            let mut hasher = sha1::Sha1::new();
+            hasher.update(key.as_bytes());
+            hasher.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+            let result = hasher.finalize();
+            b64.encode(result)
+        };
+
+        // Capture upgrade future before returning
+        let on_upgrade = hyper::upgrade::on(&mut req);
+
+        // Build switching protocols response
+        let mut response = Response::builder()
+            .status(StatusCode::SWITCHING_PROTOCOLS)
+            .header(UPGRADE, "websocket")
+            .header(CONNECTION, "Upgrade")
+            .header(SEC_WEBSOCKET_ACCEPT, accept_key);
+        // Subprotocol negotiation: choose first client offered that is allowed
+        if let Some(client_protos) = req.headers().get(SEC_WEBSOCKET_PROTOCOL) {
+            if let Ok(list_str) = client_protos.to_str() {
+                let offered: Vec<&str> = list_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                if let Some(allowed) = subprotocols.as_ref() {
+                    if let Some(chosen) = offered.into_iter().find(|p| allowed.iter().any(|a| a.eq_ignore_ascii_case(p))) {
+                        response = response.header(SEC_WEBSOCKET_PROTOCOL, chosen);
+                    }
+                } else {
+                    // If no restriction configured, echo first protocol if any provided
+                    if let Some(first) = list_str.split(',').map(|s| s.trim()).find(|s| !s.is_empty()) {
+                        response = response.header(SEC_WEBSOCKET_PROTOCOL, first);
+                    }
+                }
+            }
+        }
+        let response = response
+            .body(AxumBody::empty())
+            .wrap_err("Failed to build 101 response")?;
+
+        // After response is sent, drive the proxy in background
+        tokio::spawn(async move {
+            let upgraded = match on_upgrade.await {
+                Ok(u) => u,
+                Err(e) => {
+                    tracing::error!(error=%e, "client upgrade await failed");
+                    return;
+                }
+            };
+            let upgraded = hyper_util::rt::TokioIo::new(upgraded);
+            let ws_cfg = if max_message_size.is_some() || max_frame_size.is_some() {
+                let mut c = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
+                if let Some(m) = max_message_size { c.max_message_size = Some(m); }
+                if let Some(f) = max_frame_size { c.max_frame_size = Some(f); }
+                Some(c)
+            } else { None };
+            let client_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                upgraded,
+                Role::Server,
+                ws_cfg,
+            ).await;
+
+            // Connect to backend
+            let (backend_ws, _resp) = match tokio_tungstenite::connect_async(&backend_url).await {
+                Ok(pair) => pair,
+                Err(e) => {
+                    tracing::error!(error=%e, backend_url=%backend_url, "connect backend ws failed");
+                    return;
+                }
+            };
+
+            let (mut c_tx, mut c_rx) = client_stream.split();
+            let (mut b_tx, mut b_rx) = backend_ws.split();
+            crate::metrics::increment_ws_connections();
+            let idle_timeout = idle_timeout_secs.map(std::time::Duration::from_secs);
+
+            // Optional size constraints (simple filter)
+            let client_to_backend = async {
+                while let Some(msg) = c_rx.next().await {
+                    match msg {
+                        Ok(m) => {
+                            use tokio_tungstenite::tungstenite::protocol::Message::*;
+                            let opcode = match &m { Text(_) => "text", Binary(_) => "binary", Ping(_) => "ping", Pong(_) => "pong", Close(_) => { if let Close(Some(cf)) = &m { crate::metrics::increment_ws_close_code(cf.code.into()); } "close" }, _ => "other" };
+                            let size = match &m { Text(s) => s.len(), Binary(b) => b.len(), Ping(b) | Pong(b) => b.len(), Close(_) => 0, _ => 0 };
+                            crate::metrics::increment_ws_message("ingress", opcode);
+                            if size>0 { crate::metrics::add_ws_bytes("ingress", size); }
+                            if b_tx.send(m).await.is_err() { break; }
+                        }
+                        Err(e) => { tracing::debug!(error=%e, "client ws recv error"); break; }
+                    }
+                }
+                let _ = b_tx.send(Message::Close(None)).await;
+            };
+
+            let backend_to_client = async {
+                while let Some(msg) = b_rx.next().await {
+                    match msg {
+                        Ok(m) => {
+                            use tokio_tungstenite::tungstenite::protocol::Message::*;
+                            let opcode = match &m { Text(_) => "text", Binary(_) => "binary", Ping(_) => "ping", Pong(_) => "pong", Close(_) => { if let Close(Some(cf)) = &m { crate::metrics::increment_ws_close_code(cf.code.into()); } "close" }, _ => "other" };
+                            let size = match &m { Text(s) => s.len(), Binary(b) => b.len(), Ping(b) | Pong(b) => b.len(), Close(_) => 0, _ => 0 };
+                            crate::metrics::increment_ws_message("egress", opcode);
+                            if size>0 { crate::metrics::add_ws_bytes("egress", size); }
+                            if c_tx.send(m).await.is_err() { break; }
+                        }
+                        Err(e) => { tracing::debug!(error=%e, "backend ws recv error"); break; }
+                    }
+                }
+                let _ = c_tx.send(Message::Close(None)).await;
+            };
+
+            if let Some(timeout) = idle_timeout {
+                tokio::select! {
+                    _ = tokio::time::timeout(timeout, client_to_backend) => {},
+                    _ = tokio::time::timeout(timeout, backend_to_client) => {},
+                }
+            } else {
+                tokio::select! { _ = client_to_backend => {}, _ = backend_to_client => {}, }
+            }
+            tracing::info!(backend_url=%backend_url, "websocket session closed");
+        });
+
+        Ok(response)
     }
 
     /// Issue an HTTP redirect to configured target.
