@@ -27,7 +27,9 @@
 //! # use std::convert::TryFrom;
 //! # async fn demo() -> eyre::Result<()> {
 //! let fs = FileSystemAdapter::new();
-//! let req = Request::builder().uri("/static/logo.png").body(Body::empty())?;
+//! let req = Request::builder()
+//!     .uri("/static/logo.png")
+//!     .body(Body::empty())?;
 //! let response = fs.serve_file("./public", "logo.png", req).await?;
 //! assert!(response.status().is_success());
 //! # Ok(()) }

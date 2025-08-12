@@ -20,6 +20,7 @@
 //! # Quick Example
 //! ```no_run
 //! use std::sync::Arc;
+//!
 //! use axon::{GatewayService, config::ServerConfig};
 //!
 //! # #[tokio::main] async fn main() -> eyre::Result<()> {

@@ -20,6 +20,7 @@ Ready-to-run scenarios live in `examples/`:
 - Health checks + LB: `examples/configs/health_checks.toml` (test: `examples/scripts/health_checks.sh`)
 - Path rewrite (proxy): `examples/configs/path_rewrite.toml` (test: `examples/scripts/path_rewrite.sh`)
 - WebSocket echo: `examples/configs/ws_echo.toml` (tests: `examples/scripts/ws_echo.sh`, `ws_binary.sh`, `ws_ping_pong.sh`, `ws_close.sh`, `ws_large_payload.sh`)
+- HTTP/3 (QUIC) proxy (feature-flagged): `examples/configs/http3_proxy.toml` (smoke script: `examples/scripts/http3_proxy.sh`) – requires building with `--features http3`
 
 Validate a config:
 
@@ -39,7 +40,7 @@ A high-performance API gateway and reverse proxy built in Rust, implementing hex
 
 ## Features
 
-- Protocols: HTTP/1.1 and HTTP/2 (via Hyper/Rustls); WebSocket proxying
+- Protocols: HTTP/1.1 and HTTP/2 (via Hyper/Rustls); WebSocket proxying; optional experimental HTTP/3 (QUIC) via `--features http3`
 - Static file serving with configurable directories
 - HTTP redirects with custom status codes
 - Load balancing (round-robin and random strategies)
@@ -73,7 +74,7 @@ listen_addr = "127.0.0.1:3000"
 [protocols]
 http2_enabled = true
 websocket_enabled = true # enable websocket proxy
-http3_enabled = false    # not implemented yet
+http3_enabled = false    # set true + provide TLS cert/key when built with --features http3
 
 [health_check]
 enabled = true
@@ -172,10 +173,48 @@ TTY output uses compact human format; non‑TTY emits JSON (ideal for log aggreg
 RUST_LOG=info ./target/release/axon serve --config config.toml
 ```
 
+## HTTP/3 (QUIC) (Experimental)
+
+Axon ships an experimental HTTP/3 listener behind the `http3` cargo feature. It reuses the existing `HttpHandler` so routing, proxying, and middleware behavior match HTTP/1/2. Current state:
+
+### Capabilities
+
+- Accepts HTTP/3 (QUIC) connections using Rustls + Quinn
+- Proxies GET/POST etc. to configured backends (same route map)
+- Streams response bodies without full buffering (chunked send over QUIC)
+
+### Limitations (work in progress)
+
+- Request bodies still fully buffered before proxy dispatch
+- No per‑request timeout / cancellation wiring yet
+- Metrics do not yet include protocol=HTTP/3 label differentiation
+- Graceful shutdown integration not implemented for QUIC endpoint
+- Limited error classification / backoff strategies
+
+Enabling:
+
+```bash
+cargo run --features http3 -- serve --config examples/configs/http3_proxy.toml
+```
+Example smoke test (generates self‑signed cert, requires curl with HTTP/3):
+
+
+```bash
+examples/scripts/http3_proxy.sh
+```
+
+Integration test (requires feature):
+
+```bash
+cargo test --features http3 --test http3_basic
+```
+
+Provide a TLS cert/key path in the config. Self‑signed is acceptable for local testing.
+
 ## Roadmap
 
 - Stabilize WebSocket advanced features (compression, fragmentation, richer metrics)
-- HTTP/3 (QUIC) support
+- Enhance HTTP/3: request streaming, richer metrics, graceful shutdown, backpressure
 - Pluggable authentication / authz middlewares
 - Advanced load balancing (least‑requests, EWMA)
 - Distributed rate limiting backend

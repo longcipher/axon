@@ -1,8 +1,10 @@
 pub mod file_system;
 pub mod health_checker;
+#[cfg(feature = "http3")]
+pub mod http3;
 pub mod http_client;
 pub mod http_handler;
-pub mod middleware;
+pub mod middleware; // HTTP/3 (QUIC) support
 
 /// Re-export commonly used types from adapters
 pub use file_system::FileSystemAdapter;

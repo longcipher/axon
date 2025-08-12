@@ -354,7 +354,7 @@ mod tests {
         let addr2: SocketAddr = "127.0.0.1:8081".parse().unwrap();
 
         let conn1 = tracker.register_connection(addr1);
-    let _conn2 = tracker.register_connection(addr2);
+        let _conn2 = tracker.register_connection(addr2);
 
         conn1.increment_requests();
         // conn2 remains idle

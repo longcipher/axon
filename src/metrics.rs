@@ -26,8 +26,10 @@ use once_cell::sync::Lazy;
 
 // Axon-specific metric names
 pub const AXON_BACKEND_HEALTH_STATUS: &str = "axon_backend_health_status";
-pub const AXON_REQUESTS_TOTAL: &str = "axon_requests_total";
-pub const AXON_REQUEST_DURATION_SECONDS: &str = "axon_request_duration_seconds";
+pub const AXON_REQUESTS_TOTAL: &str = "axon_requests_total"; // labels: path, method, status, protocol
+pub const AXON_REQUEST_DURATION_SECONDS: &str = "axon_request_duration_seconds"; // labels: path, method, protocol
+pub const AXON_HTTP3_REQUESTS_TOTAL: &str = "axon_http3_requests_total"; // dedicated http3 counter (experimental)
+pub const AXON_HTTP3_REQUEST_DURATION_SECONDS: &str = "axon_http3_request_duration_seconds"; // experimental
 pub const AXON_BACKEND_REQUESTS_TOTAL: &str = "axon_backend_requests_total";
 pub const AXON_BACKEND_REQUEST_DURATION_SECONDS: &str = "axon_backend_request_duration_seconds";
 pub const AXON_ACTIVE_CONNECTIONS: &str = "axon_active_connections";
@@ -47,12 +49,22 @@ pub static BACKEND_HEALTH_GAUGES: Lazy<Mutex<HashMap<String, f64>>> = Lazy::new(
     describe_counter!(
         AXON_REQUESTS_TOTAL,
         Unit::Count,
-        "Total number of HTTP requests processed by the gateway."
+        "Total number of HTTP requests processed by the gateway (all protocols). Labels: path, method, status, protocol."
     );
     describe_histogram!(
         AXON_REQUEST_DURATION_SECONDS,
         Unit::Seconds,
-        "Latency of HTTP requests processed by the gateway."
+        "Latency of gateway requests (all protocols). Labels: path, method, protocol."
+    );
+    describe_counter!(
+        AXON_HTTP3_REQUESTS_TOTAL,
+        Unit::Count,
+        "HTTP/3 specific request counter (experimental)."
+    );
+    describe_histogram!(
+        AXON_HTTP3_REQUEST_DURATION_SECONDS,
+        Unit::Seconds,
+        "HTTP/3 specific request latency histogram (experimental)."
     );
     describe_counter!(
         AXON_BACKEND_REQUESTS_TOTAL,
@@ -72,10 +84,26 @@ pub static BACKEND_HEALTH_GAUGES: Lazy<Mutex<HashMap<String, f64>>> = Lazy::new(
         AXON_ACTIVE_REQUESTS,
         "Number of currently active requests being processed."
     );
-    describe_counter!(AXON_WEBSOCKET_CONNECTIONS_TOTAL, Unit::Count, "Total WebSocket connections established.");
-    describe_counter!(AXON_WEBSOCKET_MESSAGES_TOTAL, Unit::Count, "Total WebSocket messages proxied (by direction/opcode).");
-    describe_counter!(AXON_WEBSOCKET_BYTES_TOTAL, Unit::Bytes, "Total WebSocket payload bytes proxied (by direction).");
-    describe_counter!(AXON_WEBSOCKET_CLOSE_CODES_TOTAL, Unit::Count, "WebSocket close frames observed (by code).");
+    describe_counter!(
+        AXON_WEBSOCKET_CONNECTIONS_TOTAL,
+        Unit::Count,
+        "Total WebSocket connections established."
+    );
+    describe_counter!(
+        AXON_WEBSOCKET_MESSAGES_TOTAL,
+        Unit::Count,
+        "Total WebSocket messages proxied (by direction/opcode)."
+    );
+    describe_counter!(
+        AXON_WEBSOCKET_BYTES_TOTAL,
+        Unit::Bytes,
+        "Total WebSocket payload bytes proxied (by direction)."
+    );
+    describe_counter!(
+        AXON_WEBSOCKET_CLOSE_CODES_TOTAL,
+        Unit::Count,
+        "WebSocket close frames observed (by code)."
+    );
 
     Mutex::new(HashMap::new())
 });
@@ -96,24 +124,37 @@ pub fn set_backend_health_status(backend_id: &str, is_healthy: bool) {
 }
 
 /// Increment the total request counter for an inbound gateway request.
-pub fn increment_request_total(path: &str, method: &str, status: u16) {
+pub fn increment_request_total(path: &str, method: &str, status: u16, protocol: &str) {
     counter!(
         AXON_REQUESTS_TOTAL,
         "path" => path.to_string(),
         "method" => method.to_string(),
-        "status" => status.to_string()
+        "status" => status.to_string(),
+        "protocol" => protocol.to_string()
     )
     .increment(1);
+    if protocol == "http3" {
+        counter!(AXON_HTTP3_REQUESTS_TOTAL).increment(1);
+    }
 }
 
 /// Record a completed inbound request's duration.
-pub fn record_request_duration(path: &str, method: &str, duration: std::time::Duration) {
+pub fn record_request_duration(
+    path: &str,
+    method: &str,
+    protocol: &str,
+    duration: std::time::Duration,
+) {
     histogram!(
         AXON_REQUEST_DURATION_SECONDS,
         "path" => path.to_string(),
-        "method" => method.to_string()
+        "method" => method.to_string(),
+        "protocol" => protocol.to_string()
     )
     .record(duration.as_secs_f64());
+    if protocol == "http3" {
+        histogram!(AXON_HTTP3_REQUEST_DURATION_SECONDS).record(duration.as_secs_f64());
+    }
 }
 
 /// Increment total count of proxied backend requests.
@@ -173,7 +214,7 @@ impl RequestTimer {
 
 impl Drop for RequestTimer {
     fn drop(&mut self) {
-        record_request_duration(&self.path, &self.method, self.start.elapsed());
+        record_request_duration(&self.path, &self.method, "http", self.start.elapsed());
     }
 }
 
@@ -219,7 +260,9 @@ pub fn init_metrics() -> eyre::Result<()> {
 }
 
 /// Increment WebSocket connection counter.
-pub fn increment_ws_connections() { counter!(AXON_WEBSOCKET_CONNECTIONS_TOTAL).increment(1); }
+pub fn increment_ws_connections() {
+    counter!(AXON_WEBSOCKET_CONNECTIONS_TOTAL).increment(1);
+}
 
 /// Record a WebSocket message (direction ingress/egress, opcode string).
 pub fn increment_ws_message(direction: &str, opcode: &str) {
@@ -228,7 +271,8 @@ pub fn increment_ws_message(direction: &str, opcode: &str) {
 
 /// Add bytes transferred for WebSocket payload.
 pub fn add_ws_bytes(direction: &str, bytes: usize) {
-    counter!(AXON_WEBSOCKET_BYTES_TOTAL, "direction" => direction.to_string()).increment(bytes as u64);
+    counter!(AXON_WEBSOCKET_BYTES_TOTAL, "direction" => direction.to_string())
+        .increment(bytes as u64);
 }
 
 /// Increment close code occurrence.

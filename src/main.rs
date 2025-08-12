@@ -4,6 +4,8 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "http3")]
+use axon::adapters::http3; // HTTP/3 spawn function
 use axon::{
     adapters::{FileSystemAdapter, HealthChecker, HttpClientAdapter},
     config::{loader::load_config, models::ServerConfig},
@@ -35,13 +37,13 @@ enum Commands {
     /// Validate configuration file
     Validate {
         /// Configuration file to validate
-    #[clap(short, long, default_value = "config.toml")]
+        #[clap(short, long, default_value = "config.toml")]
         config: String,
     },
     /// Start the gateway server (default)
     Serve {
         /// Configuration file to use
-    #[clap(short, long, default_value = "config.toml")]
+        #[clap(short, long, default_value = "config.toml")]
         config: String,
     },
 }
@@ -346,6 +348,105 @@ async fn main() -> Result<()> {
         connection_tracker.clone(),
         config_holder.clone(),
     ));
+
+    // Optionally start HTTP/3 QUIC endpoint (avoid holding locks across await)
+    #[cfg(feature = "http3")]
+    {
+        let mut _http3_handle: Option<tokio::task::JoinHandle<()>> = None; // reserved for future graceful shutdown handling
+        let (http3_enabled, tls_cfg_opt, listen_addr_for_h3) = {
+            let cfg = config_holder
+                .read()
+                .map_err(|e| eyre!("Failed to acquire config read lock: {}", e))?;
+            (
+                cfg.protocols.http3_enabled,
+                cfg.tls.clone(),
+                cfg.listen_addr.clone(),
+            )
+        };
+        if http3_enabled {
+            if let Some(tls_cfg) = tls_cfg_opt {
+                if let (Some(cert_path), Some(key_path)) = (tls_cfg.cert_path, tls_cfg.key_path) {
+                    match (std::fs::read(&cert_path), std::fs::read(&key_path)) {
+                        (Ok(cert_bytes), Ok(key_bytes)) => {
+                            use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+                            let mut cert_reader = &*cert_bytes;
+                            let certs: Vec<CertificateDer> =
+                                rustls_pemfile::certs(&mut cert_reader)
+                                    .filter_map(|res| match res {
+                                        Ok(c) => Some(c),
+                                        Err(e) => {
+                                            tracing::error!(error=?e, "failed parsing http3 cert");
+                                            None
+                                        }
+                                    })
+                                    .collect();
+                            let mut key_reader = &*key_bytes;
+                            let key: Option<PrivateKeyDer> =
+                                rustls_pemfile::pkcs8_private_keys(&mut key_reader)
+                                    .filter_map(|res| match res {
+                                        Ok(k) => Some(PrivateKeyDer::Pkcs8(k)),
+                                        Err(e) => {
+                                            tracing::error!(error=?e, "failed parsing http3 key");
+                                            None
+                                        }
+                                    })
+                                    .next();
+                            if let Some(key) = key {
+                                if certs.is_empty() {
+                                    tracing::warn!("HTTP/3 enabled but no certificates parsed");
+                                } else if let Ok(addr) =
+                                    listen_addr_for_h3.parse::<std::net::SocketAddr>()
+                                {
+                                    let mut server_config = rustls::ServerConfig::builder()
+                                        .with_no_client_auth()
+                                        .with_single_cert(certs, key)
+                                        .map_err(|e| {
+                                            eyre!("Failed building rustls config for http3: {e}")
+                                        })?;
+                                    server_config.alpn_protocols = vec![b"h3".to_vec()];
+                                    let h3_handler = http_handler.clone();
+                                    let shutdown_token = graceful_shutdown.shutdown_token();
+                                    match http3::spawn_http3(
+                                        addr,
+                                        h3_handler,
+                                        server_config,
+                                        Some(shutdown_token),
+                                    )
+                                    .await
+                                    {
+                                        Ok(h) => {
+                                            _http3_handle = Some(h);
+                                            tracing::info!("HTTP/3 endpoint started on {addr}");
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(error=%e, "Failed to start HTTP/3 endpoint")
+                                        }
+                                    }
+                                } else {
+                                    tracing::error!("Failed to parse listen address for http3");
+                                }
+                            } else {
+                                tracing::error!("No PKCS#8 private key found in key file");
+                            }
+                        }
+                        (Err(e1), Err(e2)) => {
+                            tracing::error!(error=?(e1,e2), "Failed reading cert & key for http3")
+                        }
+                        (Err(e), _) => tracing::error!(error=?e, "Failed reading cert for http3"),
+                        (_, Err(e)) => tracing::error!(error=?e, "Failed reading key for http3"),
+                    }
+                } else {
+                    tracing::warn!(
+                        "HTTP/3 enabled but TLS manual cert/key paths not provided (ACME unsupported yet)"
+                    );
+                }
+            } else {
+                tracing::warn!(
+                    "HTTP/3 enabled but TLS configuration missing – QUIC requires TLS; skipping http3 start"
+                );
+            }
+        }
+    }
 
     // Simple server that binds to the configured address
     let addr: SocketAddr = {
