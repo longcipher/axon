@@ -45,9 +45,15 @@ impl GatewayService {
 
         let backends = Self::collect_backends(&config.routes);
 
+        // In scc 3.x, need to use async insert with tokio runtime
+        // This is safe to use during initialization since we're in a sync context
         for backend in &backends {
             if let Ok(backend_url) = BackendUrl::new(backend) {
-                let _ = backend_health.insert(backend.clone(), BackendHealth::new(backend_url));
+                let _ = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(
+                        backend_health.insert_async(backend.clone(), BackendHealth::new(backend_url))
+                    )
+                });
             } else {
                 tracing::error!("Invalid backend URL: {}", backend);
             }
@@ -65,7 +71,11 @@ impl GatewayService {
             if let Some(rate_cfg) = rate_limit_cfg_opt {
                 match RouteRateLimiter::new(rate_cfg) {
                     Ok(limiter) => {
-                        let _ = rate_limiters.insert(prefix.clone(), limiter);
+                        let _ = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current().block_on(
+                                rate_limiters.insert_async(prefix.clone(), limiter)
+                            )
+                        });
                     }
                     Err(e) => {
                         tracing::error!(
@@ -92,9 +102,11 @@ impl GatewayService {
 
     /// Get a cloned route-level rate limiter for a given prefix, if configured
     /// Fetch a cloned per‑route rate limiter if present.
-    pub fn get_rate_limiter(&self, route_prefix: &str) -> Option<RouteRateLimiter> {
+    pub async fn get_rate_limiter(&self, route_prefix: &str) -> Option<RouteRateLimiter> {
         self.rate_limiters
-            .read(&route_prefix.to_string(), |_, limiter| limiter.clone())
+            .get_async(&route_prefix.to_string())
+            .await
+            .map(|entry| entry.get().clone())
     }
 
     /// Collect all unique backend target URLs defined in the set of routes.
@@ -138,23 +150,27 @@ impl GatewayService {
     }
 
     /// Return the last observed health status for a backend (Healthy if unknown / untracked).
-    pub fn get_backend_health_status(&self, target: &str) -> HealthStatus {
+    pub async fn get_backend_health_status(&self, target: &str) -> HealthStatus {
         self.backend_health
-            .read(target, |_, backend| backend.status())
+            .get_async(target)
+            .await
+            .map(|entry| entry.get().status())
             .unwrap_or(HealthStatus::Healthy)
     }
 
     /// Filter the provided targets list to only healthy backends (or all if health checking disabled).
-    pub fn get_healthy_backends(&self, targets: &[String]) -> Vec<String> {
+    pub async fn get_healthy_backends(&self, targets: &[String]) -> Vec<String> {
         if !self.config.health_check.enabled {
             return targets.to_vec();
         }
 
-        targets
-            .iter()
-            .filter(|target| self.get_backend_health_status(target) == HealthStatus::Healthy)
-            .cloned()
-            .collect()
+        let mut healthy = Vec::new();
+        for target in targets {
+            if self.get_backend_health_status(target).await == HealthStatus::Healthy {
+                healthy.push(target.clone());
+            }
+        }
+        healthy
     }
 
     /// Total number of tracked backends.
@@ -163,24 +179,26 @@ impl GatewayService {
     }
 
     /// Count of currently healthy backends (or total if health checks disabled).
-    pub fn healthy_backend_count(&self) -> usize {
+    pub async fn healthy_backend_count(&self) -> usize {
         if !self.config.health_check.enabled {
             return self.backend_health.len();
         }
 
         let mut count = 0;
-        self.backend_health.scan(|_, backend| {
+        let count_ref = &mut count;
+        self.backend_health.retain_async(|_, backend| {
             if backend.status() == HealthStatus::Healthy {
-                count += 1;
+                *count_ref += 1;
             }
-        });
+            true
+        }).await;
         count
     }
 
     /// Select a backend from a set of (already matched) targets. Applies health filtering
     /// then a simple static round‑robin counter.
-    pub fn select_backend(&self, targets: &[String]) -> Option<String> {
-        let healthy_backends = self.get_healthy_backends(targets);
+    pub async fn select_backend(&self, targets: &[String]) -> Option<String> {
+        let healthy_backends = self.get_healthy_backends(targets).await;
         if healthy_backends.is_empty() {
             return None;
         }

@@ -80,9 +80,11 @@ impl HealthChecker {
             let backend_health = self.gateway_service.backend_health();
             let mut backends_to_check = Vec::new();
 
-            backend_health.scan(|target, _| {
-                backends_to_check.push(target.clone());
-            });
+            let backends_ref = &mut backends_to_check;
+            backend_health.retain_async(|target, _| {
+                backends_ref.push(target.clone());
+                true
+            }).await;
 
             for target in backends_to_check {
                 // Get backend-specific health check path or use default
@@ -101,29 +103,29 @@ impl HealthChecker {
                 {
                     Ok(is_healthy) => {
                         // Update counters and status using thresholds
-                        backend_health.update(&target, |_, h| {
+                        if let Some(h) = backend_health.get_async(&target).await {
                             if is_healthy {
-                                self.handle_health_check_success(&target, h, health_config);
+                                self.handle_health_check_success(&target, h.get(), health_config);
                             } else {
                                 self.handle_health_check_failure(
                                     &target,
-                                    h,
+                                    h.get(),
                                     health_config,
                                     "backend reported unhealthy",
                                 );
                             }
-                        });
+                        }
                     }
                     Err(err) => {
                         tracing::warn!("Health check failed for backend {}: {}", target, err);
-                        backend_health.update(&target, |_, h| {
+                        if let Some(h) = backend_health.get_async(&target).await {
                             self.handle_health_check_failure(
                                 &target,
-                                h,
+                                h.get(),
                                 health_config,
                                 &format!("request error: {err}"),
                             );
-                        });
+                        }
                     }
                 }
             }
@@ -230,40 +232,49 @@ impl HealthChecker {
     }
 
     /// Snapshot current (backend_url, status) pairs.
-    pub fn get_backend_health_status(&self) -> Vec<(String, HealthStatus)> {
+    pub async fn get_backend_health_status(&self) -> Vec<(String, HealthStatus)> {
         let mut status = Vec::new();
 
-        self.gateway_service.backend_health().scan(|url, health| {
-            status.push((url.clone(), health.status()));
-        });
+        let status_ref = &mut status;
+        self.gateway_service.backend_health().retain_async(|url, health| {
+            status_ref.push((url.clone(), health.status()));
+            true
+        }).await;
 
         status
     }
 
     /// Return true if at least one backend is currently healthy.
-    pub fn has_healthy_backends(&self) -> bool {
+    pub async fn has_healthy_backends(&self) -> bool {
         let mut has_healthy = false;
+        let has_healthy_ref = &mut has_healthy;
         self.gateway_service
             .backend_health()
-            .scan(|_, backend_health| {
+            .retain_async(|_, backend_health| {
                 if backend_health.status() == HealthStatus::Healthy {
-                    has_healthy = true;
+                    *has_healthy_ref = true;
                 }
-            });
+                true
+            }).await;
         has_healthy
     }
 
     /// Return counts of (healthy, unhealthy) backends for summary displays.
-    pub fn get_health_summary(&self) -> (usize, usize) {
+    pub async fn get_health_summary(&self) -> (usize, usize) {
         let mut healthy = 0;
         let mut unhealthy = 0;
 
+        let healthy_ref = &mut healthy;
+        let unhealthy_ref = &mut unhealthy;
         self.gateway_service
             .backend_health()
-            .scan(|_, backend_health| match backend_health.status() {
-                HealthStatus::Healthy => healthy += 1,
-                HealthStatus::Unhealthy => unhealthy += 1,
-            });
+            .retain_async(|_, backend_health| {
+                match backend_health.status() {
+                    HealthStatus::Healthy => *healthy_ref += 1,
+                    HealthStatus::Unhealthy => *unhealthy_ref += 1,
+                }
+                true
+            }).await;
 
         (healthy, unhealthy)
     }

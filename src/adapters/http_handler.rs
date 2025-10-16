@@ -170,7 +170,7 @@ impl HttpHandler {
             tracing::Span::current().record("route.prefix", &prefix);
 
             // Apply route-level rate limiting if configured
-            if let Some(limiter) = gateway.get_rate_limiter(&prefix)
+            if let Some(limiter) = gateway.get_rate_limiter(&prefix).await
                 && let Err(resp) = limiter.check(&req)
             {
                 return Ok(*resp);
@@ -217,7 +217,7 @@ impl HttpHandler {
         let gateway = self.current_gateway()?;
         let (healthy_backends, total_backends) = {
             let backend_count = gateway.backend_count();
-            let healthy_count = gateway.healthy_backend_count();
+            let healthy_count = gateway.healthy_backend_count().await;
             (healthy_count, backend_count)
         };
 
@@ -259,7 +259,7 @@ impl HttpHandler {
 
         let mut out = String::new();
         let active_conns = self.connection_tracker.active_connection_count();
-        let active_reqs = self.connection_tracker.total_active_requests();
+        let active_reqs = self.connection_tracker.total_active_requests().await;
         out.push_str(&format!(
             "# HELP {AXON_ACTIVE_CONNECTIONS} Number of currently active connections to the gateway.\n"
         ));
@@ -322,7 +322,7 @@ impl HttpHandler {
 
     /// Return runtime status (connections, configuration summary, counts).
     async fn handle_status(&self) -> Result<Response<AxumBody>, eyre::Error> {
-        let stats = self.connection_tracker.get_stats();
+        let stats = self.connection_tracker.get_stats().await;
         let config = self
             .config
             .read()
@@ -343,7 +343,7 @@ impl HttpHandler {
             },
             "backends": {
                 "total": gateway.backend_count(),
-                "healthy": gateway.healthy_backend_count()
+                "healthy": gateway.healthy_backend_count().await
             },
             "configuration": {
                 "listen_addr": &config.listen_addr,
@@ -715,8 +715,11 @@ impl HttpHandler {
         client_addr: Option<SocketAddr>,
     ) -> Result<Response<AxumBody>, eyre::Error> {
         // Register connection if we have client address
-        let connection_info =
-            client_addr.map(|addr| self.connection_tracker.register_connection(addr));
+        let connection_info = if let Some(addr) = client_addr {
+            Some(self.connection_tracker.register_connection(addr).await)
+        } else {
+            None
+        };
 
         // Increment request count
         if let Some(ref conn_info) = connection_info {
@@ -764,6 +767,7 @@ impl HttpHandler {
         // Select a backend using the load balancer
         let backend = gateway
             .select_backend(&targets)
+            .await
             .ok_or_else(|| eyre::eyre!("No healthy backends available"))?;
 
         // Record selected backend in span

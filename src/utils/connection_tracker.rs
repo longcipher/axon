@@ -90,11 +90,11 @@ impl ConnectionTracker {
 
     /// Register a new connection and return its info
     /// Register a new connection and return an Arc to its info record.
-    pub fn register_connection(&self, remote_addr: SocketAddr) -> Arc<ConnectionInfo> {
+    pub async fn register_connection(&self, remote_addr: SocketAddr) -> Arc<ConnectionInfo> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let info = Arc::new(ConnectionInfo::new(id, remote_addr));
 
-        let _ = self.connections.insert(id, info.clone());
+        let _ = self.connections.insert_async(id, info.clone()).await;
 
         tracing::debug!(
             "Connection registered: id={}, remote_addr={}, total_connections={}",
@@ -108,8 +108,8 @@ impl ConnectionTracker {
 
     /// Unregister a connection
     /// Remove (unregister) a connection by id.
-    pub fn unregister_connection(&self, connection_id: ConnectionId) {
-        if let Some((_, info)) = self.connections.remove(&connection_id) {
+    pub async fn unregister_connection(&self, connection_id: ConnectionId) {
+        if let Some((_, info)) = self.connections.remove_async(&connection_id).await {
             tracing::debug!(
                 "Connection unregistered: id={}, age={:?}, total_connections={}",
                 connection_id,
@@ -121,9 +121,11 @@ impl ConnectionTracker {
 
     /// Get connection information
     /// Lookup a connection info record by id.
-    pub fn get_connection_info(&self, connection_id: ConnectionId) -> Option<Arc<ConnectionInfo>> {
+    pub async fn get_connection_info(&self, connection_id: ConnectionId) -> Option<Arc<ConnectionInfo>> {
         self.connections
-            .read(&connection_id, |_, info| info.clone())
+            .get_async(&connection_id)
+            .await
+            .map(|entry| entry.get().clone())
     }
 
     /// Get the total number of active connections
@@ -134,57 +136,67 @@ impl ConnectionTracker {
 
     /// Get the total number of requests across all connections
     /// Sum of active requests across all connections.
-    pub fn total_active_requests(&self) -> u64 {
+    pub async fn total_active_requests(&self) -> u64 {
         let mut total = 0;
-        self.connections.scan(|_, info| {
-            total += info.active_request_count();
-        });
+        let total_ref = &mut total;
+        self.connections.retain_async(|_, info| {
+            *total_ref += info.active_request_count();
+            true
+        }).await;
         total
     }
 
     /// Get all connection information
     /// Return a snapshot list of all connection records.
-    pub fn get_all_connections(&self) -> Vec<Arc<ConnectionInfo>> {
+    pub async fn get_all_connections(&self) -> Vec<Arc<ConnectionInfo>> {
         let mut connections = Vec::new();
-        self.connections.scan(|_, info| {
-            connections.push(info.clone());
-        });
+        let connections_ref = &mut connections;
+        self.connections.retain_async(|_, info| {
+            connections_ref.push(info.clone());
+            true
+        }).await;
         connections
     }
 
     /// Check if any connections have active requests
     /// Whether any connection currently has >0 active requests.
-    pub fn has_active_requests(&self) -> bool {
+    pub async fn has_active_requests(&self) -> bool {
         let mut has_active = false;
-        self.connections.scan(|_, info| {
+        let has_active_ref = &mut has_active;
+        self.connections.retain_async(|_, info| {
             if info.active_request_count() > 0 {
-                has_active = true;
+                *has_active_ref = true;
             }
-        });
+            true
+        }).await;
         has_active
     }
 
     /// Get connections that are idle (no active requests)
     /// All connections with zero active requests.
-    pub fn get_idle_connections(&self) -> Vec<Arc<ConnectionInfo>> {
+    pub async fn get_idle_connections(&self) -> Vec<Arc<ConnectionInfo>> {
         let mut idle_connections = Vec::new();
-        self.connections.scan(|_, info| {
+        let idle_ref = &mut idle_connections;
+        self.connections.retain_async(|_, info| {
             if info.is_idle() {
-                idle_connections.push(info.clone());
+                idle_ref.push(info.clone());
             }
-        });
+            true
+        }).await;
         idle_connections
     }
 
     /// Get connections with active requests
     /// All connections with at least one active request.
-    pub fn get_active_connections(&self) -> Vec<Arc<ConnectionInfo>> {
+    pub async fn get_active_connections(&self) -> Vec<Arc<ConnectionInfo>> {
         let mut active_connections = Vec::new();
-        self.connections.scan(|_, info| {
+        let active_ref = &mut active_connections;
+        self.connections.retain_async(|_, info| {
             if !info.is_idle() {
-                active_connections.push(info.clone());
+                active_ref.push(info.clone());
             }
-        });
+            true
+        }).await;
         active_connections
     }
 
@@ -208,12 +220,12 @@ impl ConnectionTracker {
         let mut check_interval = Duration::from_millis(100);
 
         while start.elapsed() < timeout {
-            if !self.has_active_requests() {
+            if !self.has_active_requests().await {
                 tracing::info!("All connections drained successfully");
                 return true;
             }
 
-            let active_count = self.total_active_requests();
+            let active_count = self.total_active_requests().await;
             tracing::debug!(
                 "Waiting for connections to drain: {} active requests remaining, elapsed: {:?}",
                 active_count,
@@ -226,7 +238,7 @@ impl ConnectionTracker {
             check_interval = std::cmp::min(check_interval * 2, Duration::from_secs(1));
         }
 
-        let remaining_requests = self.total_active_requests();
+        let remaining_requests = self.total_active_requests().await;
         tracing::warn!(
             "Drain timeout exceeded: {} active requests still remaining after {:?}",
             remaining_requests,
@@ -238,19 +250,19 @@ impl ConnectionTracker {
 
     /// Force close all idle connections
     /// Force removal of all idle connections.
-    pub fn close_idle_connections(&self) {
-        let idle_connections = self.get_idle_connections();
+    pub async fn close_idle_connections(&self) {
+        let idle_connections = self.get_idle_connections().await;
         tracing::info!("Closing {} idle connections", idle_connections.len());
 
         for connection in idle_connections {
-            self.unregister_connection(connection.id);
+            self.unregister_connection(connection.id).await;
         }
     }
 
     /// Get connection statistics
     /// Aggregate snapshot statistics.
-    pub fn get_stats(&self) -> ConnectionStats {
-        let all_connections = self.get_all_connections();
+    pub async fn get_stats(&self) -> ConnectionStats {
+        let all_connections = self.get_all_connections().await;
         let total_connections = all_connections.len();
         let mut total_requests = 0;
         let mut idle_connections = 0;
@@ -305,11 +317,11 @@ mod tests {
         let tracker = ConnectionTracker::new();
         let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
-        let conn = tracker.register_connection(addr);
+        let conn = tracker.register_connection(addr).await;
         assert_eq!(conn.remote_addr, addr);
         assert_eq!(tracker.active_connection_count(), 1);
 
-        tracker.unregister_connection(conn.id);
+        tracker.unregister_connection(conn.id).await;
         assert_eq!(tracker.active_connection_count(), 0);
     }
 
@@ -318,7 +330,7 @@ mod tests {
         let tracker = ConnectionTracker::new();
         let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
-        let conn = tracker.register_connection(addr);
+        let conn = tracker.register_connection(addr).await;
         assert_eq!(conn.active_request_count(), 0);
         assert!(conn.is_idle());
 
@@ -336,7 +348,7 @@ mod tests {
         let tracker = ConnectionTracker::new();
         let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
-        let conn = tracker.register_connection(addr);
+        let conn = tracker.register_connection(addr).await;
         conn.increment_requests();
 
         // Should not drain immediately with active requests
@@ -353,13 +365,13 @@ mod tests {
         let addr1: SocketAddr = "127.0.0.1:8080".parse().unwrap();
         let addr2: SocketAddr = "127.0.0.1:8081".parse().unwrap();
 
-        let conn1 = tracker.register_connection(addr1);
-        let _conn2 = tracker.register_connection(addr2);
+        let conn1 = tracker.register_connection(addr1).await;
+        let _conn2 = tracker.register_connection(addr2).await;
 
         conn1.increment_requests();
         // conn2 remains idle
 
-        let stats = tracker.get_stats();
+        let stats = tracker.get_stats().await;
         assert_eq!(stats.total_connections, 2);
         assert_eq!(stats.active_connections, 1);
         assert_eq!(stats.idle_connections, 1);

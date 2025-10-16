@@ -102,14 +102,21 @@ pub fn validate_health_check_config(config: &ServerConfig) -> eyre::Result<()> {
 /// Collect (backend_url, healthy) pairs.
 pub async fn get_backend_health_status(gateway_service: &GatewayService) -> Vec<(String, bool)> {
     let mut status = Vec::new();
-
-    // Get all backend URLs by scanning the backend health map
+    let mut backend_urls = Vec::new();
+    
+    // First collect all backend URLs
     let backend_health = gateway_service.backend_health();
-    backend_health.scan(|target, _| {
-        let health_status = gateway_service.get_backend_health_status(target);
+    backend_health.retain_async(|target, _| {
+        backend_urls.push(target.to_string());
+        true
+    }).await;
+
+    // Then check health status for each backend (can use async operations)
+    for url in backend_urls {
+        let health_status = gateway_service.get_backend_health_status(&url).await;
         let is_healthy = health_status == crate::config::HealthStatus::Healthy;
-        status.push((target.clone(), is_healthy));
-    });
+        status.push((url, is_healthy));
+    }
 
     status
 }

@@ -33,6 +33,9 @@ pub struct HttpClientAdapter {
 impl HttpClientAdapter {
     /// Create a new HTTP client adapter.
     pub fn new() -> Result<Self> {
+        // Install default crypto provider for rustls if not already set
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
         let mut http_connector = HttpConnector::new();
         http_connector.enforce_http(false); // Allow HTTPS URLs
 
