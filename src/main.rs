@@ -40,6 +40,12 @@ enum Commands {
         #[clap(short, long, default_value = "config.toml")]
         config: String,
     },
+    /// Initialize a new configuration file
+    Init {
+        /// Output path for the new config file
+        #[clap(short, long, default_value = "config.toml")]
+        config: String,
+    },
     /// Start the gateway server (default)
     Serve {
         /// Configuration file to use
@@ -57,6 +63,7 @@ async fn main() -> Result<()> {
     // Determine the command to run
     let (command, config_path) = match args.command {
         Some(Commands::Validate { config }) => ("validate", config),
+        Some(Commands::Init { config }) => ("init", config),
         Some(Commands::Serve { config }) => ("serve", config),
         None => ("serve", args.config), // Default to serve with config from args
     };
@@ -64,6 +71,9 @@ async fn main() -> Result<()> {
     match command {
         "validate" => {
             return validate_config_command(&config_path).await;
+        }
+        "init" => {
+            return init_config_command(&config_path).await;
         }
         "serve" => {
             // Continue with normal server startup
@@ -641,4 +651,51 @@ async fn validate_config_command(config_path: &str) -> Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+/// Initialize a new configuration file
+async fn init_config_command(config_path: &str) -> Result<()> {
+    let path = Path::new(config_path);
+    if path.exists() {
+        eprintln!("❌ Error: Configuration file '{config_path}' already exists");
+        std::process::exit(1);
+    }
+
+    let default_config = r#"# Axon API Gateway Configuration
+
+# The address to listen on
+listen_addr = "127.0.0.1:8080"
+
+# Health check configuration
+[health_check]
+enabled = true
+interval_secs = 10
+path = "/health"
+
+# Protocol configuration
+[protocols]
+http2_enabled = true
+websocket_enabled = true
+
+# Example Route: Proxy to a backend
+[routes."/api"]
+type = "proxy"
+target = "http://localhost:3000"
+
+# Example Route: Static files
+[routes."/static"]
+type = "static"
+root = "./static"
+
+# Example Route: Load Balancer
+# [routes."/service"]
+# type = "load_balance"
+# targets = ["http://localhost:3001", "http://localhost:3002"]
+# strategy = "round_robin"
+"#;
+
+    tokio::fs::write(path, default_config).await.context("Failed to write config file")?;
+    println!("✅ Created default configuration at: {config_path}");
+    println!("   Run 'axon serve --config {config_path}' to start the server");
+    Ok(())
 }

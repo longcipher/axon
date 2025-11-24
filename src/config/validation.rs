@@ -6,7 +6,7 @@ use eyre::Result;
 use regex::Regex;
 
 use crate::config::models::{
-    AcmeConfig, LoadBalanceStrategy, RateLimitConfig, RouteConfig, ServerConfig, TlsConfig,
+    LoadBalanceStrategy, RateLimitConfig, RouteConfig, ServerConfig, TlsConfig,
 };
 
 /// Validation result type alias
@@ -26,9 +26,6 @@ pub enum ValidationError {
 
     #[error("Invalid TLS configuration: {message}")]
     InvalidTls { message: String },
-
-    #[error("Invalid ACME configuration: {message}")]
-    InvalidAcme { message: String },
 
     #[error("Route conflict detected: {message}")]
     RouteConflict { message: String },
@@ -345,8 +342,8 @@ impl ServerConfigValidator {
 
     /// Validate TLS configuration
     fn validate_tls_config(config: &TlsConfig) -> ValidationResult<()> {
-        match (&config.cert_path, &config.key_path, &config.acme) {
-            (Some(cert), Some(key), None) => {
+        match (&config.cert_path, &config.key_path) {
+            (Some(cert), Some(key)) => {
                 // Manual certificate configuration
                 if !std::path::Path::new(cert).exists() {
                     return Err(ValidationError::InvalidTls {
@@ -362,64 +359,11 @@ impl ServerConfigValidator {
 
                 Ok(())
             }
-            (None, None, Some(acme_config)) => {
-                // ACME configuration
-                Self::validate_acme_config(acme_config)
-            }
-            (None, None, None) => Err(ValidationError::InvalidTls {
-                message:
-                    "TLS configuration must specify either certificate paths or ACME configuration"
-                        .to_string(),
-            }),
             _ => Err(ValidationError::InvalidTls {
-                message:
-                    "TLS configuration cannot specify both certificate paths and ACME configuration"
-                        .to_string(),
+                message: "TLS configuration must specify both certificate and private key paths"
+                    .to_string(),
             }),
         }
-    }
-
-    /// Validate ACME configuration
-    fn validate_acme_config(config: &AcmeConfig) -> ValidationResult<()> {
-        if !config.enabled {
-            return Ok(());
-        }
-
-        if config.domains.is_empty() {
-            return Err(ValidationError::InvalidAcme {
-                message: "ACME configuration must specify at least one domain".to_string(),
-            });
-        }
-
-        // Validate email format
-        let email_regex = Regex::new(r"^[^\s@]+@[^\s@]+\.[^\s@]+$").expect("Invalid email regex");
-        if !email_regex.is_match(&config.email) {
-            return Err(ValidationError::InvalidAcme {
-                message: format!("Invalid email address: {}", config.email),
-            });
-        }
-
-        // Validate domains
-        for domain in &config.domains {
-            if domain.is_empty() || domain.contains(' ') {
-                return Err(ValidationError::InvalidAcme {
-                    message: format!("Invalid domain: {domain}"),
-                });
-            }
-        }
-
-        // Validate renewal period
-        if let Some(days) = config.renewal_days_before_expiry {
-            if days == 0 || days > 89 {
-                return Err(ValidationError::InvalidAcme {
-                    message: format!(
-                        "Renewal days before expiry must be between 1 and 89, got {days}"
-                    ),
-                });
-            }
-        }
-
-        Ok(())
     }
 
     /// Check for conflicting route paths
