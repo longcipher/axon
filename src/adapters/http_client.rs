@@ -200,13 +200,13 @@ impl HttpClient for HttpClientAdapter {
                 tracing::Span::current().record("http.status_code", status_code);
 
                 // Convert Hyper response body back to AxumBody
-                let (parts, hyper_body) = response.into_parts();
-                let collected_body = hyper_body.collect().await.map_err(|e| {
-                    HttpClientError::ConnectionError(format!(
-                        "Failed to collect backend response body: {e}"
-                    ))
-                })?;
-                let axum_body = AxumBody::from(collected_body.to_bytes());
+                let (mut parts, hyper_body) = response.into_parts();
+
+                // Remove Transfer-Encoding header since the body is being decoded/streamed
+                // and the downstream server (Axum) will handle framing.
+                parts.headers.remove(header::TRANSFER_ENCODING);
+
+                let axum_body = AxumBody::new(hyper_body);
 
                 Ok(Response::from_parts(parts, axum_body))
             }
