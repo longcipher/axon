@@ -26,7 +26,7 @@ wait_http_ok http://127.0.0.1:8081/api 50 0.1 200 || { echo "[proxy_single] FAIL
 code1=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8081/api)
 code2=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8081/api/)
 if [[ "$code1" == "200" && "$code2" == "200" ]]; then
-	echo "[proxy_single] OK"
+	echo "[proxy_single_rewrite] OK"
 else
-	echo "[proxy_single] FAIL: code1=$code1 code2=$code2"; exit 1
+	echo "[proxy_single_rewrite] FAIL: code1=$code1 code2=$code2"; exit 1
 fi
