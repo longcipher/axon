@@ -7,11 +7,6 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Default function for HTTP/1 enabled flag
-fn default_http1_enabled() -> bool {
-    true
-}
-
 /// Configuration for static file serving
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
@@ -168,8 +163,6 @@ pub struct ServerConfig {
     pub protocols: ProtocolConfig,
     #[serde(default)]
     pub static_files: Option<StaticFilesConfig>,
-    #[serde(default = "default_http1_enabled")]
-    pub http1_enabled: bool,
 }
 
 impl ServerConfig {
@@ -191,7 +184,6 @@ impl Default for ServerConfig {
             backend_health_paths: HashMap::new(),
             protocols: ProtocolConfig::default(),
             static_files: None,
-            http1_enabled: true,
         }
     }
 }
@@ -207,7 +199,6 @@ pub struct ServerConfigBuilder {
     backend_health_paths: HashMap<String, String>,
     protocols: Option<ProtocolConfig>,
     static_files: Option<StaticFilesConfig>,
-    http1_enabled: bool,
 }
 
 impl Default for ServerConfigBuilder {
@@ -222,7 +213,6 @@ impl Default for ServerConfigBuilder {
             backend_health_paths: HashMap::new(),
             protocols: None,
             static_files: None,
-            http1_enabled: true,
         }
     }
 }
@@ -252,12 +242,6 @@ impl ServerConfigBuilder {
         self
     }
 
-    /// Enable or disable HTTP/1
-    pub fn http1_enabled(mut self, enabled: bool) -> Self {
-        self.http1_enabled = enabled;
-        self
-    }
-
     /// Add a route with the given path prefix and configuration
     pub fn route(mut self, path_prefix: impl Into<String>, config: RouteConfig) -> Self {
         self.routes.insert(path_prefix.into(), config);
@@ -269,17 +253,6 @@ impl ServerConfigBuilder {
         self.tls = Some(TlsConfig {
             cert_path: Some(cert_path.into()),
             key_path: Some(key_path.into()),
-            acme: None,
-        });
-        self
-    }
-
-    /// Set ACME configuration for automatic certificate management
-    pub fn acme(mut self, acme_config: AcmeConfig) -> Self {
-        self.tls = Some(TlsConfig {
-            cert_path: None,
-            key_path: None,
-            acme: Some(acme_config),
         });
         self
     }
@@ -327,39 +300,17 @@ impl ServerConfigBuilder {
             backend_health_paths: self.backend_health_paths,
             protocols: self.protocols.unwrap_or_default(),
             static_files: self.static_files,
-            http1_enabled: self.http1_enabled,
         })
     }
 }
 
-/// TLS configuration either via manual certificate/key pair or ACME automation.
+/// TLS configuration via manual certificate/key pair.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TlsConfig {
-    /// Path to PEM encoded certificate (if using manual mode)
+    /// Path to PEM encoded certificate
     pub cert_path: Option<String>,
-    /// Path to PEM encoded private key (if using manual mode)
+    /// Path to PEM encoded private key
     pub key_path: Option<String>,
-    /// Automatic certificate management configuration
-    pub acme: Option<AcmeConfig>,
-}
-
-/// ACME (e.g. Let's Encrypt) certificate management configuration.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AcmeConfig {
-    /// Enable ACME flow
-    pub enabled: bool,
-    /// Domain list to request certificates for
-    pub domains: Vec<String>,
-    /// Contact email for ACME account
-    pub email: String,
-    /// Optional custom CA directory URL (defaults to production endpoint)
-    pub ca_url: Option<String>,
-    /// Use CA staging environment (rate‑limit friendly)
-    pub staging: Option<bool>,
-    /// Where to store issued certs / keys
-    pub storage_path: Option<String>,
-    /// Days before expiry to attempt renewal
-    pub renewal_days_before_expiry: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -903,20 +903,6 @@ impl HttpHandler {
 
         None
     }
-
-    /// Placeholder for future websocket proxying support.
-    pub async fn handle_websocket_upgrade(
-        &self,
-        _req: Request<AxumBody>,
-    ) -> Result<Response<AxumBody>, eyre::Error> {
-        // TODO: Implement WebSocket proxying
-        tracing::warn!("websocket not implemented");
-
-        Response::builder()
-            .status(StatusCode::NOT_IMPLEMENTED)
-            .body(AxumBody::from("WebSocket proxying not yet implemented"))
-            .wrap_err("Failed to build not implemented response")
-    }
 }
 
 impl Clone for HttpHandler {
