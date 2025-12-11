@@ -121,7 +121,10 @@ impl ConnectionTracker {
 
     /// Get connection information
     /// Lookup a connection info record by id.
-    pub async fn get_connection_info(&self, connection_id: ConnectionId) -> Option<Arc<ConnectionInfo>> {
+    pub async fn get_connection_info(
+        &self,
+        connection_id: ConnectionId,
+    ) -> Option<Arc<ConnectionInfo>> {
         self.connections
             .get_async(&connection_id)
             .await
@@ -139,10 +142,12 @@ impl ConnectionTracker {
     pub async fn total_active_requests(&self) -> u64 {
         let mut total = 0;
         let total_ref = &mut total;
-        self.connections.retain_async(|_, info| {
-            *total_ref += info.active_request_count();
-            true
-        }).await;
+        self.connections
+            .retain_async(|_, info| {
+                *total_ref += info.active_request_count();
+                true
+            })
+            .await;
         total
     }
 
@@ -151,10 +156,12 @@ impl ConnectionTracker {
     pub async fn get_all_connections(&self) -> Vec<Arc<ConnectionInfo>> {
         let mut connections = Vec::new();
         let connections_ref = &mut connections;
-        self.connections.retain_async(|_, info| {
-            connections_ref.push(info.clone());
-            true
-        }).await;
+        self.connections
+            .retain_async(|_, info| {
+                connections_ref.push(info.clone());
+                true
+            })
+            .await;
         connections
     }
 
@@ -163,12 +170,14 @@ impl ConnectionTracker {
     pub async fn has_active_requests(&self) -> bool {
         let mut has_active = false;
         let has_active_ref = &mut has_active;
-        self.connections.retain_async(|_, info| {
-            if info.active_request_count() > 0 {
-                *has_active_ref = true;
-            }
-            true
-        }).await;
+        self.connections
+            .retain_async(|_, info| {
+                if info.active_request_count() > 0 {
+                    *has_active_ref = true;
+                }
+                true
+            })
+            .await;
         has_active
     }
 
@@ -177,12 +186,14 @@ impl ConnectionTracker {
     pub async fn get_idle_connections(&self) -> Vec<Arc<ConnectionInfo>> {
         let mut idle_connections = Vec::new();
         let idle_ref = &mut idle_connections;
-        self.connections.retain_async(|_, info| {
-            if info.is_idle() {
-                idle_ref.push(info.clone());
-            }
-            true
-        }).await;
+        self.connections
+            .retain_async(|_, info| {
+                if info.is_idle() {
+                    idle_ref.push(info.clone());
+                }
+                true
+            })
+            .await;
         idle_connections
     }
 
@@ -191,12 +202,14 @@ impl ConnectionTracker {
     pub async fn get_active_connections(&self) -> Vec<Arc<ConnectionInfo>> {
         let mut active_connections = Vec::new();
         let active_ref = &mut active_connections;
-        self.connections.retain_async(|_, info| {
-            if !info.is_idle() {
-                active_ref.push(info.clone());
-            }
-            true
-        }).await;
+        self.connections
+            .retain_async(|_, info| {
+                if !info.is_idle() {
+                    active_ref.push(info.clone());
+                }
+                true
+            })
+            .await;
         active_connections
     }
 

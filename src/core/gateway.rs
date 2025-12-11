@@ -51,7 +51,8 @@ impl GatewayService {
             if let Ok(backend_url) = BackendUrl::new(backend) {
                 let _ = tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(
-                        backend_health.insert_async(backend.clone(), BackendHealth::new(backend_url))
+                        backend_health
+                            .insert_async(backend.clone(), BackendHealth::new(backend_url)),
                     )
                 });
             } else {
@@ -72,9 +73,8 @@ impl GatewayService {
                 match RouteRateLimiter::new(rate_cfg) {
                     Ok(limiter) => {
                         let _ = tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current().block_on(
-                                rate_limiters.insert_async(prefix.clone(), limiter)
-                            )
+                            tokio::runtime::Handle::current()
+                                .block_on(rate_limiters.insert_async(prefix.clone(), limiter))
                         });
                     }
                     Err(e) => {
@@ -186,29 +186,56 @@ impl GatewayService {
 
         let mut count = 0;
         let count_ref = &mut count;
-        self.backend_health.retain_async(|_, backend| {
-            if backend.status() == HealthStatus::Healthy {
-                *count_ref += 1;
-            }
-            true
-        }).await;
+        self.backend_health
+            .retain_async(|_, backend| {
+                if backend.status() == HealthStatus::Healthy {
+                    *count_ref += 1;
+                }
+                true
+            })
+            .await;
         count
     }
 
     /// Select a backend from a set of (already matched) targets. Applies health filtering
     /// then a simple static round‑robin counter.
-    pub async fn select_backend(&self, targets: &[String]) -> Option<String> {
+    pub async fn select_backend(
+        &self,
+        targets: &[String],
+        strategy: Option<crate::config::LoadBalanceStrategy>,
+    ) -> Option<String> {
         let healthy_backends = self.get_healthy_backends(targets).await;
         if healthy_backends.is_empty() {
             return None;
         }
 
-        // Simple round-robin selection - in a real implementation you might want
-        // to use a more sophisticated load balancing algorithm
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        match strategy.unwrap_or(crate::config::LoadBalanceStrategy::RoundRobin) {
+            crate::config::LoadBalanceStrategy::RoundRobin => {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                static COUNTER: AtomicUsize = AtomicUsize::new(0);
+                let index = COUNTER.fetch_add(1, Ordering::Relaxed) % healthy_backends.len();
+                healthy_backends.get(index).cloned()
+            }
+            crate::config::LoadBalanceStrategy::Random => {
+                use rand::Rng;
+                let index = rand::rng().random_range(0..healthy_backends.len());
+                healthy_backends.get(index).cloned()
+            }
+            crate::config::LoadBalanceStrategy::LeastConnections => {
+                let mut best_backend = None;
+                let mut min_conns = usize::MAX;
 
-        let index = COUNTER.fetch_add(1, Ordering::Relaxed) % healthy_backends.len();
-        healthy_backends.get(index).cloned()
+                for backend_url in &healthy_backends {
+                    if let Some(entry) = self.backend_health.get_async(backend_url).await {
+                        let conns = entry.get().active_connections();
+                        if conns < min_conns {
+                            min_conns = conns;
+                            best_backend = Some(backend_url.clone());
+                        }
+                    }
+                }
+                best_backend.or_else(|| healthy_backends.first().cloned())
+            }
+        }
     }
 }

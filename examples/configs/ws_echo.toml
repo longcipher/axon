@@ -8,7 +8,7 @@ http3_enabled = false
 [routes."/ws/"]
 type = "websocket"
 # echo backend (will be served by local python ws server at 9105)
-target = "http://127.0.0.1:9105"
+target = "ws://127.0.0.1:9105"
 path_rewrite = "/"  # forward path after /ws/
 max_message_size = 65536
 max_frame_size = 65536

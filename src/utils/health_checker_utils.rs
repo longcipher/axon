@@ -103,13 +103,15 @@ pub fn validate_health_check_config(config: &ServerConfig) -> eyre::Result<()> {
 pub async fn get_backend_health_status(gateway_service: &GatewayService) -> Vec<(String, bool)> {
     let mut status = Vec::new();
     let mut backend_urls = Vec::new();
-    
+
     // First collect all backend URLs
     let backend_health = gateway_service.backend_health();
-    backend_health.retain_async(|target, _| {
-        backend_urls.push(target.to_string());
-        true
-    }).await;
+    backend_health
+        .retain_async(|target, _| {
+            backend_urls.push(target.to_string());
+            true
+        })
+        .await;
 
     // Then check health status for each backend (can use async operations)
     for url in backend_urls {

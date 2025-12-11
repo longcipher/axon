@@ -90,6 +90,12 @@ impl LoadBalancerFactory {
         match strategy {
             crate::config::LoadBalanceStrategy::RoundRobin => RoundRobinStrategy::new().boxed(),
             crate::config::LoadBalanceStrategy::Random => RandomStrategy::new().boxed(),
+            crate::config::LoadBalanceStrategy::LeastConnections => {
+                tracing::warn!(
+                    "LeastConnections strategy not yet implemented, falling back to RoundRobin"
+                );
+                RoundRobinStrategy::new().boxed()
+            }
         }
     }
 }

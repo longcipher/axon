@@ -5,11 +5,9 @@
 //! cross‑cutting concerns (security headers, CORS, request timing, request ID,
 //! Alt-Svc advertising). They deliberately stay stateless (except for reading
 //! shared configuration) to minimize contention and complexity.
-use std::{
-    sync::{Arc, RwLock},
-    time::Instant,
-};
+use std::{sync::Arc, time::Instant};
 
+use arc_swap::ArcSwap;
 use axum::{extract::Request, http::HeaderValue, middleware::Next, response::Response};
 
 use crate::config::models::ServerConfig;
@@ -19,22 +17,14 @@ use crate::config::models::ServerConfig;
 pub async fn add_alt_svc_header(
     req: Request,
     next: Next,
-    config_holder: Arc<RwLock<Arc<ServerConfig>>>,
+    config_holder: Arc<ArcSwap<ServerConfig>>,
 ) -> Response {
     let mut response = next.run(req).await;
 
     // Check if HTTP/3 is enabled in the configuration
     let should_add_alt_svc = {
-        match config_holder.read() {
-            Ok(config) => config.protocols.http3_enabled && config.tls.is_some(),
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to acquire config read lock for Alt-Svc header: {}",
-                    e
-                );
-                false
-            }
-        }
+        let config = config_holder.load();
+        config.protocols.http3_enabled && config.tls.is_some()
     };
 
     if should_add_alt_svc {
@@ -48,7 +38,7 @@ pub async fn add_alt_svc_header(
 
 /// Create a cloneable closure wrapping [`add_alt_svc_header`].
 pub fn create_alt_svc_middleware(
-    config_holder: Arc<RwLock<Arc<ServerConfig>>>,
+    config_holder: Arc<ArcSwap<ServerConfig>>,
 ) -> impl Fn(Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>
 + Clone {
     move |req, next| {

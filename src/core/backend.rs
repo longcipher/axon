@@ -8,7 +8,7 @@
 use std::{
     fmt,
     str::FromStr,
-    sync::atomic::{AtomicU8, AtomicU32, Ordering},
+    sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering},
 };
 
 use thiserror::Error;
@@ -105,6 +105,8 @@ pub struct BackendHealth {
     pub consecutive_successes: AtomicU32,
     /// Counter for consecutive failed health checks
     pub consecutive_failures: AtomicU32,
+    /// Counter for active connections
+    pub active_connections: AtomicUsize,
 }
 
 impl BackendHealth {
@@ -121,6 +123,7 @@ impl BackendHealth {
             status: AtomicU8::new(HEALTH_STATUS_HEALTHY), // Start as healthy
             consecutive_successes: AtomicU32::new(0),
             consecutive_failures: AtomicU32::new(0),
+            active_connections: AtomicUsize::new(0),
         }
     }
 
@@ -154,6 +157,21 @@ impl BackendHealth {
         // Reset success counter; do not change failure counter here.
         self.consecutive_successes.store(0, Ordering::Release);
         set_backend_health_status(self.target_url.as_str(), false);
+    }
+
+    /// Get active connections count
+    pub fn active_connections(&self) -> usize {
+        self.active_connections.load(Ordering::Relaxed)
+    }
+
+    /// Increment active connections count
+    pub fn inc_active_connections(&self) {
+        self.active_connections.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement active connections count
+    pub fn dec_active_connections(&self) {
+        self.active_connections.fetch_sub(1, Ordering::Relaxed);
     }
 
     /// Number of recent consecutive successes.

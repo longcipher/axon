@@ -15,12 +15,9 @@
 //! * Track active connections & requests for observability and graceful shutdown.
 //!
 //! The actual network server (Axum) delegates into `HttpHandler::handle_request`.
-use std::{
-    net::SocketAddr,
-    sync::{Arc, RwLock},
-    time::Instant,
-};
+use std::{net::SocketAddr, str::FromStr, sync::Arc, time::Instant};
 
+use arc_swap::ArcSwap;
 use axum::{
     body::Body as AxumBody,
     http::{HeaderMap, StatusCode, header},
@@ -44,21 +41,21 @@ use crate::{
 /// endpoint / proxy logic.
 pub struct HttpHandler {
     /// Holder for the active `GatewayService` that is swapped on config reload.
-    gateway_service_holder: Arc<RwLock<Arc<GatewayService>>>,
+    gateway_service_holder: Arc<ArcSwap<GatewayService>>,
     http_client: Arc<dyn HttpClient>,
     file_system: Arc<FileSystemAdapter>,
     connection_tracker: Arc<ConnectionTracker>,
-    config: Arc<RwLock<Arc<ServerConfig>>>,
+    config: Arc<ArcSwap<ServerConfig>>,
 }
 
 impl HttpHandler {
     /// Construct a new handler. All arguments are shared, thread‑safe Arcs.
     pub fn new(
-        gateway_service_holder: Arc<RwLock<Arc<GatewayService>>>,
+        gateway_service_holder: Arc<ArcSwap<GatewayService>>,
         http_client: Arc<dyn HttpClient>,
         file_system: Arc<FileSystemAdapter>,
         connection_tracker: Arc<ConnectionTracker>,
-        config: Arc<RwLock<Arc<ServerConfig>>>,
+        config: Arc<ArcSwap<ServerConfig>>,
     ) -> Self {
         Self {
             gateway_service_holder,
@@ -70,11 +67,8 @@ impl HttpHandler {
     }
 
     /// Get the current `GatewayService` (updated after hot reload).
-    fn current_gateway(&self) -> eyre::Result<Arc<GatewayService>> {
-        self.gateway_service_holder
-            .read()
-            .map_err(|_| eyre::eyre!("Failed to acquire gateway service lock"))
-            .map(|g| g.clone())
+    fn current_gateway(&self) -> Arc<GatewayService> {
+        self.gateway_service_holder.load_full()
     }
 
     /// Entry point for Axum – wraps routing with tracing and timing.
@@ -165,7 +159,7 @@ impl HttpHandler {
         }
 
         // Check if there's a matching route in configuration
-        let gateway = self.current_gateway()?;
+        let gateway = self.current_gateway();
         if let Some((prefix, route_config)) = gateway.find_matching_route(path) {
             tracing::Span::current().record("route.prefix", &prefix);
 
@@ -174,6 +168,46 @@ impl HttpHandler {
                 && let Err(resp) = limiter.check(&req)
             {
                 return Ok(*resp);
+            }
+
+            // Apply configured middlewares
+            let middlewares = match &route_config {
+                RouteConfig::Static { middlewares, .. } => middlewares,
+                RouteConfig::Redirect { middlewares, .. } => middlewares,
+                RouteConfig::Proxy { middlewares, .. } => middlewares,
+                RouteConfig::LoadBalance { middlewares, .. } => middlewares,
+                RouteConfig::Websocket { middlewares, .. } => middlewares,
+            };
+
+            // Simple middleware processor (currently only supports 'strip_prefix' and 'cors')
+            // In a real implementation, this would be a proper pipeline
+            let mut req = req;
+            for mw in middlewares {
+                match mw.as_str() {
+                    "strip_prefix" => {
+                        let path = req.uri().path();
+                        if let Some(new_path) = path.strip_prefix(&prefix) {
+                            let new_path = if new_path.is_empty() { "/" } else { new_path };
+                            let mut parts = req.uri().clone().into_parts();
+                            parts.path_and_query = Some(
+                                axum::http::uri::PathAndQuery::from_str(new_path).unwrap_or_else(
+                                    |_| axum::http::uri::PathAndQuery::from_static("/"),
+                                ),
+                            );
+                            if let Ok(new_uri) = axum::http::Uri::from_parts(parts) {
+                                *req.uri_mut() = new_uri;
+                            }
+                        }
+                    }
+                    "cors" => {
+                        // CORS is usually a response header, but we can't easily modify response here
+                        // without wrapping the handler. For now, we'll just log.
+                        // To implement CORS properly, we need to wrap the response.
+                        // This requires refactoring handle_request to be composable.
+                        // For Phase 2, we'll skip complex response middlewares here.
+                    }
+                    _ => {}
+                }
             }
 
             match route_config {
@@ -214,7 +248,7 @@ impl HttpHandler {
 
     /// Build JSON health response summarizing backend availability.
     async fn handle_health_check(&self) -> Result<Response<AxumBody>, eyre::Error> {
-        let gateway = self.current_gateway()?;
+        let gateway = self.current_gateway();
         let (healthy_backends, total_backends) = {
             let backend_count = gateway.backend_count();
             let healthy_count = gateway.healthy_backend_count().await;
@@ -323,12 +357,8 @@ impl HttpHandler {
     /// Return runtime status (connections, configuration summary, counts).
     async fn handle_status(&self) -> Result<Response<AxumBody>, eyre::Error> {
         let stats = self.connection_tracker.get_stats().await;
-        let config = self
-            .config
-            .read()
-            .map_err(|_| eyre::eyre!("Failed to acquire config lock"))?
-            .clone();
-        let gateway = self.current_gateway()?;
+        let config = self.config.load_full();
+        let gateway = self.current_gateway();
 
         let status_data = serde_json::json!({
             "service": "Axon API Gateway",
@@ -376,7 +406,7 @@ impl HttpHandler {
         let path = req.uri().path().to_string();
 
         // Find the matching static route
-        let gateway = self.current_gateway()?;
+        let gateway = self.current_gateway();
         if let Some((_, RouteConfig::Static { root, .. })) = gateway.find_matching_route(&path) {
             // Extract the file path by removing the route prefix
             let file_path = path.strip_prefix(route_prefix).unwrap_or(&path);
@@ -436,7 +466,7 @@ impl HttpHandler {
 
         // Extract route & config
         let path = req.uri().path().to_string();
-        let gateway = self.current_gateway()?;
+        let gateway = self.current_gateway();
         let (route_prefix, route_config) = gateway
             .find_matching_route(&path)
             .ok_or_else(|| eyre::eyre!("No matching WS route"))?;
@@ -744,34 +774,40 @@ impl HttpHandler {
         let path = req.uri().path();
 
         // Find the matching route configuration
-        let gateway = self.current_gateway()?;
+        let gateway = self.current_gateway();
         let (route_prefix, route_config) = gateway
             .find_matching_route(path)
             .ok_or_else(|| eyre::eyre!("No matching route found for path: {}", path))?;
 
         // Get targets and path rewrite from the route configuration
-        let (targets, path_rewrite) = match &route_config {
+        let (targets, strategy, path_rewrite) = match &route_config {
             RouteConfig::Proxy {
                 target,
                 path_rewrite,
                 ..
-            } => (vec![target.clone()], path_rewrite.as_ref()),
+            } => (vec![target.clone()], None, path_rewrite.as_ref()),
             RouteConfig::LoadBalance {
                 targets,
+                strategy,
                 path_rewrite,
                 ..
-            } => (targets.clone(), path_rewrite.as_ref()),
+            } => (targets.clone(), Some(*strategy), path_rewrite.as_ref()),
             _ => return Err(eyre::eyre!("Route is not a proxy or load balance route")),
         };
 
         // Select a backend using the load balancer
         let backend = gateway
-            .select_backend(&targets)
+            .select_backend(&targets, strategy)
             .await
             .ok_or_else(|| eyre::eyre!("No healthy backends available"))?;
 
         // Record selected backend in span
         tracing::Span::current().record("backend.url", &backend);
+
+        // Increment active connections
+        if let Some(entry) = gateway.backend_health().get_async(&backend).await {
+            entry.get().inc_active_connections();
+        }
 
         // Handle path rewriting
         let original_uri = req.uri().clone();
@@ -858,7 +894,14 @@ impl HttpHandler {
 
         // Send request to backend
         let backend_start = Instant::now();
-        match self.http_client.send_request(req).await {
+        let result = self.http_client.send_request(req).await;
+
+        // Decrement active connections
+        if let Some(entry) = gateway.backend_health().get_async(&backend).await {
+            entry.get().dec_active_connections();
+        }
+
+        match result {
             Ok(response) => {
                 let backend_duration = backend_start.elapsed();
                 tracing::info!(
@@ -919,18 +962,20 @@ impl Clone for HttpHandler {
 
 #[cfg(test)]
 mod tests {
+    use arc_swap::ArcSwap;
+
     use super::*;
     use crate::config::models::ServerConfig;
 
     fn create_test_handler() -> HttpHandler {
         let config = Arc::new(ServerConfig::default());
         let gateway_service = Arc::new(GatewayService::new(config.clone()));
-        let gateway_holder = Arc::new(RwLock::new(gateway_service));
+        let gateway_holder = Arc::new(ArcSwap::from(gateway_service));
         let http_client = Arc::new(crate::adapters::HttpClientAdapter::new().expect("client"))
             as Arc<dyn HttpClient>;
         let file_system = Arc::new(FileSystemAdapter::new());
         let connection_tracker = Arc::new(ConnectionTracker::new());
-        let config_holder = Arc::new(RwLock::new(config));
+        let config_holder = Arc::new(ArcSwap::from(config));
 
         HttpHandler::new(
             gateway_holder,

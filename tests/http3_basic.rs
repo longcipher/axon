@@ -12,13 +12,9 @@
 //! NOTE: This test purposefully avoids spawning the full binary; it assembles the
 //! required pieces directly to keep the test fast and deterministic.
 
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
+use arc_swap::ArcSwap;
 use axon::{
     adapters::{FileSystemAdapter, HttpClientAdapter, HttpHandler, http3},
     config::models::{ProtocolConfig, RouteConfig, ServerConfig},
@@ -72,6 +68,7 @@ async fn http3_proxy_basic() -> Result<()> {
             response_headers: None,
             request_body: None,
             response_body: None,
+            middlewares: vec![],
         },
     );
     let mut protocols = ProtocolConfig::default();
@@ -84,9 +81,9 @@ async fn http3_proxy_basic() -> Result<()> {
     };
 
     let config_arc = Arc::new(server_config);
-    let config_holder = Arc::new(RwLock::new(config_arc.clone()));
+    let config_holder = Arc::new(ArcSwap::from(config_arc.clone()));
     let gateway = Arc::new(GatewayService::new(config_arc.clone()));
-    let gateway_holder = Arc::new(RwLock::new(gateway));
+    let gateway_holder = Arc::new(ArcSwap::from(gateway));
 
     let http_client: Arc<dyn HttpClient> = Arc::new(HttpClientAdapter::new()?);
     let file_system = Arc::new(FileSystemAdapter::new());

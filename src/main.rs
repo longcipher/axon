@@ -1,26 +1,31 @@
-use std::{
-    path::Path,
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{path::Path, sync::Arc, time::Duration};
 
+use arc_swap::ArcSwap;
 #[cfg(feature = "http3")]
 use axon::adapters::http3; // HTTP/3 spawn function
 use axon::{
-    adapters::{FileSystemAdapter, HealthChecker, HttpClientAdapter},
-    config::{loader::load_config, models::ServerConfig},
+    adapters::{
+        FileConfigProvider, FileSystemAdapter, HealthChecker, HttpClientAdapter, HttpConfigProvider,
+    },
+    config::models::ServerConfig,
     core::GatewayService,
-    ports::http_client::HttpClient,
+    ports::{config_provider::ConfigProvider, http_client::HttpClient},
     tracing_setup,
     utils::graceful_shutdown::GracefulShutdown,
 };
+use axum::serve::Listener;
 use clap::Parser;
 use color_eyre::{
     Result,
     eyre::{Context, eyre},
 };
-use notify::{RecursiveMode, Watcher};
-use tokio::sync::{Mutex as TokioMutex, mpsc};
+use futures_util::StreamExt;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    sync::Mutex as TokioMutex,
+};
+use tokio_stream::wrappers::TcpListenerStream;
+use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about)]
@@ -52,6 +57,46 @@ enum Commands {
         #[clap(short, long, default_value = "config.toml")]
         config: String,
     },
+}
+
+struct AxumListener<S> {
+    stream: S,
+    local_addr: std::net::SocketAddr,
+}
+
+impl<S, I, E> Listener for AxumListener<S>
+where
+    S: futures_util::Stream<Item = Result<(I, std::net::SocketAddr), E>> + Unpin + Send + 'static,
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    type Io = I;
+    type Addr = std::net::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match self.stream.next().await {
+                Some(Ok((io, addr))) => return (io, addr),
+                Some(Err(e)) => tracing::debug!("Accept error: {}", e),
+                None => std::future::pending().await,
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        Ok(self.local_addr)
+    }
+}
+
+fn create_config_provider(config_path: &str) -> Result<Arc<dyn ConfigProvider>> {
+    if config_path.starts_with("http://") || config_path.starts_with("https://") {
+        Ok(Arc::new(HttpConfigProvider::new(
+            config_path.to_string(),
+            Duration::from_secs(10),
+        )))
+    } else {
+        Ok(Arc::new(FileConfigProvider::new(config_path)?))
+    }
 }
 
 #[tokio::main]
@@ -97,44 +142,37 @@ async fn main() -> Result<()> {
     tracing_setup::init_tracing().map_err(|e| eyre!("Failed to initialize tracing: {}", e))?;
 
     tracing::info!("Loading initial configuration from {config_path}");
-    let initial_server_config_data: ServerConfig = load_config(&config_path)
+
+    // Create config provider
+    let config_provider =
+        create_config_provider(&config_path).context("Failed to create config provider")?;
+
+    let initial_server_config_data: ServerConfig = config_provider
+        .load_config()
         .await
         .with_context(|| format!("Failed to load initial config from {config_path}"))?;
 
     let initial_config_arc = Arc::new(initial_server_config_data);
-    let config_holder = Arc::new(RwLock::new(initial_config_arc.clone()));
+    let config_holder = Arc::new(ArcSwap::new(initial_config_arc.clone()));
 
     let http_client: Arc<dyn HttpClient> =
         Arc::new(HttpClientAdapter::new().context("Failed to create HTTP client adapter")?);
     let file_system = Arc::new(FileSystemAdapter::new());
 
-    let initial_gateway_service = Arc::new(GatewayService::new(
-        config_holder
-            .read()
-            .map_err(|e| eyre!("Failed to acquire config read lock: {}", e))?
-            .clone(),
-    ));
-    let gateway_service_holder = Arc::new(RwLock::new(initial_gateway_service.clone()));
+    let initial_gateway_service = Arc::new(GatewayService::new(config_holder.load_full()));
+    let gateway_service_holder = Arc::new(ArcSwap::new(initial_gateway_service.clone()));
 
     let health_checker_handle_arc_mutex =
         Arc::new(TokioMutex::new(None::<tokio::task::JoinHandle<()>>));
 
     {
         let mut handle_guard = health_checker_handle_arc_mutex.lock().await;
-        let current_config = config_holder
-            .read()
-            .map_err(|e| eyre!("Failed to acquire config read lock: {}", e))?
-            .clone();
+        let current_config = config_holder.load_full();
         if current_config.health_check.enabled {
             tracing::info!("Starting initial health checker...");
 
-            let health_checker = HealthChecker::new(
-                gateway_service_holder
-                    .read()
-                    .map_err(|e| eyre!("Failed to acquire gateway service read lock: {}", e))?
-                    .clone(),
-                http_client.clone(),
-            );
+            let health_checker =
+                HealthChecker::new(gateway_service_holder.load_full(), http_client.clone());
 
             *handle_guard = Some(tokio::spawn(async move {
                 tracing::info!(
@@ -153,80 +191,19 @@ async fn main() -> Result<()> {
         }
     }
 
-    // File Watcher Task
-    let config_path_for_watcher = config_path.clone();
+    // Config Watcher Task
     let config_holder_clone = config_holder.clone();
     let gateway_service_holder_clone = gateway_service_holder.clone();
-    // Clone for use in different parts of the application
     let health_handle_for_watcher = health_checker_handle_arc_mutex.clone();
     let http_client_for_watcher = http_client.clone();
     let debounce_duration = Duration::from_secs(2);
 
+    let mut notify_rx = config_provider.watch();
+    let config_provider_for_watcher = config_provider.clone();
+    let config_path_for_watcher = config_path.clone();
+
     tokio::spawn(async move {
-        let (notify_tx, mut notify_rx) = mpsc::channel::<()>(10);
-
-        let config_file_as_path = Path::new(&config_path_for_watcher);
-        let directory_to_watch = config_file_as_path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
-
-        let config_file_path_for_closure = config_path_for_watcher.clone();
-
-        let mut watcher = match notify::recommended_watcher(
-            move |res: Result<notify::Event, notify::Error>| match res {
-                Ok(event) => {
-                    let config_file_name_to_check = Path::new(&config_file_path_for_closure)
-                        .file_name()
-                        .unwrap_or_default();
-                    if (event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove())
-                        && event
-                            .paths
-                            .iter()
-                            .any(|p| p.file_name().unwrap_or_default() == config_file_name_to_check)
-                    {
-                        tracing::debug!(
-                            "Config file event detected: {:?}, sending signal for reload.",
-                            event.kind
-                        );
-                        if notify_tx.try_send(()).is_err() {
-                            tracing::warn!(
-                                "Config reload signal channel (internal to watcher) full or disconnected."
-                            );
-                        }
-                    }
-                }
-                Err(e) => tracing::error!("File watch error: {:?}", e),
-            },
-        ) {
-            Ok(w) => w,
-            Err(e) => {
-                tracing::error!(
-                    "Failed to create file watcher: {}. Hot reloading will be disabled.",
-                    e
-                );
-                return;
-            }
-        };
-
-        if let Err(e) = watcher.watch(&directory_to_watch, RecursiveMode::NonRecursive) {
-            tracing::error!(
-                "Failed to watch config directory {:?}: {}. Hot reloading will be disabled.",
-                directory_to_watch,
-                e
-            );
-            return;
-        }
-        tracing::info!(
-            "Watching for config file changes in directory: {:?} for file: {}",
-            directory_to_watch,
-            Path::new(&config_path_for_watcher)
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-        );
-
+        tracing::info!("Config watcher task started.");
         let mut last_reload_attempt_time = tokio::time::Instant::now();
         last_reload_attempt_time = last_reload_attempt_time
             .checked_sub(debounce_duration)
@@ -245,55 +222,27 @@ async fn main() -> Result<()> {
                 "Attempting to reload configuration from {}",
                 config_path_for_watcher
             );
-            match load_config(&config_path_for_watcher).await {
+
+            match config_provider_for_watcher.load_config().await {
                 Ok(new_config_data) => {
                     let new_config_arc: Arc<ServerConfig> = Arc::new(new_config_data);
                     tracing::info!("Successfully loaded new configuration.");
 
-                    {
-                        match config_holder_clone.write() {
-                            Ok(mut config_w) => {
-                                *config_w = new_config_arc.clone();
-                                tracing::info!("Global ServerConfig Arc updated.");
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to acquire config write lock during reload: {}",
-                                    e
-                                );
-                                continue;
-                            }
-                        }
-                    }
+                    config_holder_clone.store(new_config_arc.clone());
+                    tracing::info!("Global ServerConfig Arc updated.");
 
                     let new_gateway_service = Arc::new(GatewayService::new(new_config_arc.clone()));
-                    {
-                        match gateway_service_holder_clone.write() {
-                            Ok(mut gateway_s_w) => {
-                                *gateway_s_w = new_gateway_service.clone();
-                                tracing::info!("Global GatewayService Arc updated.");
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to acquire gateway service write lock during reload: {}",
-                                    e
-                                );
-                                continue;
-                            }
-                        }
-                    }
+                    gateway_service_holder_clone.store(new_gateway_service.clone());
+                    tracing::info!("Global GatewayService Arc updated.");
 
                     let mut handle_guard = health_handle_for_watcher.lock().await;
-                    if let Some(old_handle) = handle_guard.take() {
-                        tracing::info!("Aborting previous health checker task...");
-                        old_handle.abort();
+
+                    // Stop existing health checker
+                    if let Some(health_handle) = handle_guard.take() {
+                        health_handle.abort();
                     }
 
                     if new_config_arc.health_check.enabled {
-                        tracing::info!(
-                            "Starting new health checker task with updated configuration..."
-                        );
-
                         let health_checker = HealthChecker::new(
                             new_gateway_service.clone(),
                             http_client_for_watcher.clone(),
@@ -302,20 +251,18 @@ async fn main() -> Result<()> {
 
                         *handle_guard = Some(tokio::spawn(async move {
                             tracing::info!(
-                                "File Reload health checker task started. Interval: {}s, Path: {}, Unhealthy Threshold: {}, Healthy Threshold: {}",
+                                "Reload health checker task started. Interval: {}s, Path: {}, Unhealthy Threshold: {}, Healthy Threshold: {}",
                                 config_for_logging.health_check.interval_secs,
                                 config_for_logging.health_check.path,
                                 config_for_logging.health_check.unhealthy_threshold,
                                 config_for_logging.health_check.healthy_threshold
                             );
                             if let Err(e) = health_checker.run().await {
-                                tracing::error!("File Reload health checker run error: {}", e);
+                                tracing::error!("Reload health checker run error: {}", e);
                             }
                         }));
                     } else {
-                        tracing::info!(
-                            "Health checking is disabled in the new configuration. Not starting health checker task."
-                        );
+                        tracing::info!("Health checking is disabled in the new configuration.");
                     }
                     tracing::info!(
                         "Configuration reloaded and health checker (if enabled) managed."
@@ -330,7 +277,7 @@ async fn main() -> Result<()> {
             }
             while notify_rx.try_recv().is_ok() {}
         }
-        tracing::info!("File watcher task is shutting down.");
+        tracing::info!("Config watcher task is shutting down.");
     });
 
     // Create graceful shutdown manager
@@ -364,9 +311,7 @@ async fn main() -> Result<()> {
     {
         let mut _http3_handle: Option<tokio::task::JoinHandle<()>> = None; // reserved for future graceful shutdown handling
         let (http3_enabled, tls_cfg_opt, listen_addr_for_h3) = {
-            let cfg = config_holder
-                .read()
-                .map_err(|e| eyre!("Failed to acquire config read lock: {}", e))?;
+            let cfg = config_holder.load();
             (
                 cfg.protocols.http3_enabled,
                 cfg.tls.clone(),
@@ -460,9 +405,7 @@ async fn main() -> Result<()> {
 
     // Simple server that binds to the configured address
     let addr: SocketAddr = {
-        let config_ref = config_holder
-            .read()
-            .map_err(|e| eyre!("Failed to acquire config read lock: {}", e))?;
+        let config_ref = config_holder.load();
         config_ref
             .listen_addr
             .parse()
@@ -471,9 +414,7 @@ async fn main() -> Result<()> {
 
     // Show configuration info
     {
-        let ch = config_holder
-            .read()
-            .map_err(|e| eyre!("Failed to acquire config read lock: {}", e))?;
+        let ch = config_holder.load();
         let protocols = &ch.protocols;
 
         tracing::info!(
@@ -496,68 +437,60 @@ async fn main() -> Result<()> {
     // Create Axum router with real request handling
     use std::convert::Infallible;
 
-    use axum::{
-        Router,
-        body::Body,
-        extract::{ConnectInfo, Request},
-        response::Response,
-        routing::any,
-    };
+    use axum::{Router, body::Body, extract::Request, response::Response, routing::any};
+    use tower_http::compression::CompressionLayer;
 
     let handler = http_handler.clone();
     let app = Router::new()
+        .layer(CompressionLayer::new())
         .route(
             "/{*path}",
-            any(
-                move |ConnectInfo(addr): ConnectInfo<SocketAddr>, req: Request| {
-                    let handler = handler.clone();
-                    async move {
-                        match handler.handle_request(req, Some(addr)).await {
-                            Ok(response) => Ok::<Response<Body>, Infallible>(response),
-                            Err(e) => {
-                                tracing::error!("Request handling error: {:?}", e);
-                                let error_response = Response::builder()
-                                    .status(500)
-                                    .body(Body::from("Internal Server Error"))
-                                    .unwrap_or_else(|_| {
-                                        Response::new(Body::from("Internal Server Error"))
-                                    });
-                                Ok(error_response)
-                            }
+            any(move |req: Request| {
+                let handler = handler.clone();
+                async move {
+                    // TODO: Restore ConnectInfo<SocketAddr> once trait bounds are fixed
+                    match handler.handle_request(req, None).await {
+                        Ok(response) => Ok::<Response<Body>, Infallible>(response),
+                        Err(e) => {
+                            tracing::error!("Request handling error: {:?}", e);
+                            let error_response = Response::builder()
+                                .status(500)
+                                .body(Body::from("Internal Server Error"))
+                                .unwrap_or_else(|_| {
+                                    Response::new(Body::from("Internal Server Error"))
+                                });
+                            Ok(error_response)
                         }
                     }
-                },
-            ),
+                }
+            }),
         )
         .route(
             "/",
-            any(
-                move |ConnectInfo(addr): ConnectInfo<SocketAddr>, req: Request| {
-                    let handler = http_handler.clone();
-                    async move {
-                        match handler.handle_request(req, Some(addr)).await {
-                            Ok(response) => Ok::<Response<Body>, Infallible>(response),
-                            Err(e) => {
-                                tracing::error!("Request handling error: {:?}", e);
-                                let error_response = Response::builder()
-                                    .status(500)
-                                    .body(Body::from("Internal Server Error"))
-                                    .unwrap_or_else(|_| {
-                                        Response::new(Body::from("Internal Server Error"))
-                                    });
-                                Ok(error_response)
-                            }
+            any(move |req: Request| {
+                let handler = http_handler.clone();
+                async move {
+                    // TODO: Restore ConnectInfo<SocketAddr> once trait bounds are fixed
+                    match handler.handle_request(req, None).await {
+                        Ok(response) => Ok::<Response<Body>, Infallible>(response),
+                        Err(e) => {
+                            tracing::error!("Request handling error: {:?}", e);
+                            let error_response = Response::builder()
+                                .status(500)
+                                .body(Body::from("Internal Server Error"))
+                                .unwrap_or_else(|_| {
+                                    Response::new(Body::from("Internal Server Error"))
+                                });
+                            Ok(error_response)
                         }
                     }
-                },
-            ),
+                }
+            }),
         );
 
     // Log initial routes from the config_holder
     {
-        let ch = config_holder
-            .read()
-            .map_err(|e| eyre!("Failed to acquire config read lock for logging: {}", e))?;
+        let ch = config_holder.load();
         for (prefix, route) in &ch.routes {
             tracing::info!("Configured route: {} -> {:?}", prefix, route);
         }
@@ -569,26 +502,130 @@ async fn main() -> Result<()> {
 
     tracing::info!("Axon API Gateway server starting on {}", addr);
 
+    // Determine TLS configuration
+    let tls_config = {
+        let cfg = config_holder.load();
+        cfg.tls.clone()
+    };
+
     // Run the server and wait for shutdown
-    let server_result = tokio::select! {
-        result = axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>()
-        ) => {
-            result.context("Server error")
-        },
-        shutdown_reason = graceful_shutdown.wait_for_shutdown_signal() => {
-            tracing::info!("Shutdown signal received: {:?}", shutdown_reason);
+    let server_result = if let Some(tls) = tls_config {
+        if let Some(acme) = tls.acme {
+            // ACME (Let's Encrypt) mode
+            use rustls_acme::{AcmeConfig, caches::DirCache};
 
-            // Cleanup health checker
-            let mut handle_guard = health_checker_handle_arc_mutex.lock().await;
-            if let Some(health_handle) = handle_guard.take() {
-                tracing::info!("Shutting down health checker...");
-                health_handle.abort();
+            tracing::info!("Starting server with ACME (Let's Encrypt) support");
+            let state = AcmeConfig::new(acme.domains)
+                .contact([format!("mailto:{}", acme.email)])
+                .cache_option(Some(DirCache::new(acme.cache_dir)))
+                .directory_lets_encrypt(acme.production)
+                .state();
+
+            let local_addr = listener.local_addr().context("Failed to get local addr")?;
+            let incoming = state.incoming(
+                TcpListenerStream::new(listener).map(|res| res.map(|s| s.compat())),
+                vec![],
+            );
+            let stream = incoming
+                .filter_map(|res| async {
+                    match res {
+                        Ok(stream) => {
+                            let stream = stream.compat();
+                            let addr = stream
+                                .get_ref()
+                                .get_ref()
+                                .0
+                                .get_ref()
+                                .peer_addr()
+                                .unwrap_or_else(|_| {
+                                    "0.0.0.0:0".parse().expect("valid fallback address")
+                                });
+                            Some(Ok::<_, std::io::Error>((stream, addr)))
+                        }
+                        Err(e) => {
+                            tracing::debug!("TLS accept error: {}", e);
+                            None
+                        }
+                    }
+                })
+                .boxed();
+
+            let tls_listener = AxumListener { stream, local_addr };
+
+            tokio::select! {
+                result = axum::serve(tls_listener, app.into_make_service()) => {
+                    result.context("Server error")
+                },
+                shutdown_reason = graceful_shutdown.wait_for_shutdown_signal() => {
+                    tracing::info!("Shutdown signal received: {:?}", shutdown_reason);
+                    Ok(())
+                }
             }
+        } else if let (Some(cert_path), Some(key_path)) = (tls.cert_path, tls.key_path) {
+            // Manual TLS
+            use std::{fs::File, io::BufReader};
 
-            tracing::info!("Graceful shutdown completed");
-            Ok(())
+            use rustls::ServerConfig;
+            use rustls_pemfile::{certs, pkcs8_private_keys};
+            use tls_listener::TlsListener;
+
+            tracing::info!("Starting server with manual TLS");
+            let cert_file =
+                &mut BufReader::new(File::open(cert_path).context("failed to open cert file")?);
+            let key_file =
+                &mut BufReader::new(File::open(key_path).context("failed to open key file")?);
+
+            let cert_chain = certs(cert_file).collect::<Result<Vec<_>, _>>()?;
+            let mut keys = pkcs8_private_keys(key_file).collect::<Result<Vec<_>, _>>()?;
+            let key = keys.remove(0);
+
+            let config = ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(cert_chain, key.into())?;
+
+            let local_addr = listener.local_addr().context("Failed to get local addr")?;
+            let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+            let tls_listener_stream = TlsListener::new(acceptor, listener);
+
+            let tls_listener = AxumListener {
+                stream: tls_listener_stream,
+                local_addr,
+            };
+
+            tokio::select! {
+                result = axum::serve(tls_listener, app.into_make_service()) => {
+                    result.context("Server error")
+                },
+                shutdown_reason = graceful_shutdown.wait_for_shutdown_signal() => {
+                    tracing::info!("Shutdown signal received: {:?}", shutdown_reason);
+                    Ok(())
+                }
+            }
+        } else {
+            Err(eyre!("TLS enabled but no valid config found"))
+        }
+    } else {
+        // Plain HTTP
+        tokio::select! {
+            result = axum::serve(
+                listener,
+                app.into_make_service()
+            ) => {
+                result.context("Server error")
+            },
+            shutdown_reason = graceful_shutdown.wait_for_shutdown_signal() => {
+                tracing::info!("Shutdown signal received: {:?}", shutdown_reason);
+
+                // Cleanup health checker
+                let mut handle_guard = health_checker_handle_arc_mutex.lock().await;
+                if let Some(health_handle) = handle_guard.take() {
+                    tracing::info!("Shutting down health checker...");
+                    health_handle.abort();
+                }
+
+                tracing::info!("Graceful shutdown completed");
+                Ok(())
+            }
         }
     };
 
@@ -694,7 +731,9 @@ root = "./static"
 # strategy = "round_robin"
 "#;
 
-    tokio::fs::write(path, default_config).await.context("Failed to write config file")?;
+    tokio::fs::write(path, default_config)
+        .await
+        .context("Failed to write config file")?;
     println!("✅ Created default configuration at: {config_path}");
     println!("   Run 'axon serve --config {config_path}' to start the server");
     Ok(())

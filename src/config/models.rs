@@ -189,6 +189,7 @@ impl Default for ServerConfig {
 }
 
 /// Builder for ServerConfig to allow for cleaner configuration creation
+#[derive(Default)]
 pub struct ServerConfigBuilder {
     listen_addr: Option<String>,
     host: Option<String>,
@@ -199,22 +200,6 @@ pub struct ServerConfigBuilder {
     backend_health_paths: HashMap<String, String>,
     protocols: Option<ProtocolConfig>,
     static_files: Option<StaticFilesConfig>,
-}
-
-impl Default for ServerConfigBuilder {
-    fn default() -> Self {
-        Self {
-            listen_addr: None,
-            host: None,
-            port: None,
-            routes: HashMap::new(),
-            tls: None,
-            health_check: None,
-            backend_health_paths: HashMap::new(),
-            protocols: None,
-            static_files: None,
-        }
-    }
 }
 
 impl ServerConfigBuilder {
@@ -253,6 +238,7 @@ impl ServerConfigBuilder {
         self.tls = Some(TlsConfig {
             cert_path: Some(cert_path.into()),
             key_path: Some(key_path.into()),
+            acme: None,
         });
         self
     }
@@ -304,13 +290,34 @@ impl ServerConfigBuilder {
     }
 }
 
-/// TLS configuration via manual certificate/key pair.
+/// TLS configuration via manual certificate/key pair or ACME.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TlsConfig {
     /// Path to PEM encoded certificate
     pub cert_path: Option<String>,
     /// Path to PEM encoded private key
     pub key_path: Option<String>,
+    /// ACME (Let's Encrypt) configuration
+    pub acme: Option<AcmeConfig>,
+}
+
+/// ACME configuration for automatic HTTPS
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AcmeConfig {
+    /// List of domains to request certificates for
+    pub domains: Vec<String>,
+    /// Email address for ACME registration
+    pub email: String,
+    /// Directory to cache certificates
+    #[serde(default = "default_acme_cache_dir")]
+    pub cache_dir: String,
+    /// Use production ACME directory (default: false, uses staging)
+    #[serde(default)]
+    pub production: bool,
+}
+
+fn default_acme_cache_dir() -> String {
+    ".axon/acme_cache".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -405,11 +412,15 @@ pub enum RouteConfig {
     Static {
         root: String,
         rate_limit: Option<RateLimitConfig>,
+        #[serde(default)]
+        middlewares: Vec<String>,
     },
     Redirect {
         target: String,
         status_code: Option<u16>,
         rate_limit: Option<RateLimitConfig>,
+        #[serde(default)]
+        middlewares: Vec<String>,
     },
     Proxy {
         target: String,
@@ -423,6 +434,8 @@ pub enum RouteConfig {
         request_body: Option<BodyActions>,
         #[serde(default)]
         response_body: Option<BodyActions>,
+        #[serde(default)]
+        middlewares: Vec<String>,
     },
     LoadBalance {
         targets: Vec<String>,
@@ -437,6 +450,8 @@ pub enum RouteConfig {
         request_body: Option<BodyActions>,
         #[serde(default)]
         response_body: Option<BodyActions>,
+        #[serde(default)]
+        middlewares: Vec<String>,
     },
     Websocket {
         target: String,
@@ -454,6 +469,8 @@ pub enum RouteConfig {
         /// Allowed subprotocols (Sec-WebSocket-Protocol negotiation)
         #[serde(default)]
         subprotocols: Option<Vec<String>>,
+        #[serde(default)]
+        middlewares: Vec<String>,
     },
 }
 
@@ -464,6 +481,8 @@ pub enum LoadBalanceStrategy {
     RoundRobin,
     #[serde(rename = "random")]
     Random,
+    #[serde(rename = "least_connections")]
+    LeastConnections,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

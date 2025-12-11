@@ -81,10 +81,12 @@ impl HealthChecker {
             let mut backends_to_check = Vec::new();
 
             let backends_ref = &mut backends_to_check;
-            backend_health.retain_async(|target, _| {
-                backends_ref.push(target.clone());
-                true
-            }).await;
+            backend_health
+                .retain_async(|target, _| {
+                    backends_ref.push(target.clone());
+                    true
+                })
+                .await;
 
             for target in backends_to_check {
                 // Get backend-specific health check path or use default
@@ -236,10 +238,13 @@ impl HealthChecker {
         let mut status = Vec::new();
 
         let status_ref = &mut status;
-        self.gateway_service.backend_health().retain_async(|url, health| {
-            status_ref.push((url.clone(), health.status()));
-            true
-        }).await;
+        self.gateway_service
+            .backend_health()
+            .retain_async(|url, health| {
+                status_ref.push((url.clone(), health.status()));
+                true
+            })
+            .await;
 
         status
     }
@@ -255,7 +260,8 @@ impl HealthChecker {
                     *has_healthy_ref = true;
                 }
                 true
-            }).await;
+            })
+            .await;
         has_healthy
     }
 
@@ -274,7 +280,8 @@ impl HealthChecker {
                     HealthStatus::Unhealthy => *unhealthy_ref += 1,
                 }
                 true
-            }).await;
+            })
+            .await;
 
         (healthy, unhealthy)
     }
