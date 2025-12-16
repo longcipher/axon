@@ -185,6 +185,18 @@ impl HttpClient for HttpClientAdapter {
                 HttpClientError::ConnectionError(format!("Failed to collect request body: {e}"))
             })?
             .to_bytes();
+
+        // Fix headers after collecting body:
+        // Remove Transfer-Encoding (body is now buffered) and ensure Content-Length is set
+        parts.headers.remove(header::TRANSFER_ENCODING);
+        if !bytes.is_empty() {
+            parts.headers.insert(
+                header::CONTENT_LENGTH,
+                HeaderValue::from_str(&bytes.len().to_string())
+                    .unwrap_or_else(|_| HeaderValue::from_static("0")),
+            );
+        }
+
         let body = Full::new(bytes);
         let outgoing_request = Request::from_parts(parts, body);
 

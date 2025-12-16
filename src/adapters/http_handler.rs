@@ -152,7 +152,7 @@ impl HttpHandler {
 
         // WAF Check
         let req = if gateway.is_waf_enabled() {
-            let (parts, body) = req.into_parts();
+            let (mut parts, body) = req.into_parts();
             // Limit body size for WAF inspection (e.g., 10MB)
             let limit = 10 * 1024 * 1024;
             let bytes = match to_bytes(body, limit).await {
@@ -190,6 +190,20 @@ impl HttpHandler {
                         "WAF detected threat (monitor mode, not blocking)"
                     );
                 }
+            }
+
+            // Fix headers after body inspection:
+            // Remove Transfer-Encoding and set Content-Length for the buffered body
+            parts.headers.remove(header::TRANSFER_ENCODING);
+            if !bytes.is_empty() {
+                parts.headers.insert(
+                    header::CONTENT_LENGTH,
+                    bytes
+                        .len()
+                        .to_string()
+                        .parse()
+                        .expect("valid content-length"),
+                );
             }
 
             Request::from_parts(parts, AxumBody::from(bytes))
