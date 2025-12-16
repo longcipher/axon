@@ -172,15 +172,24 @@ impl HttpHandler {
                 Some(&bytes),
                 client_ip.as_deref(),
             ) {
-                tracing::warn!(
-                    uri = %parts.uri,
-                    threat_type = ?violation.threat_type,
-                    "WAF blocked request"
-                );
-                return Ok(Response::builder()
-                    .status(StatusCode::FORBIDDEN)
-                    .body(AxumBody::from("Request blocked by WAF"))
-                    .expect("Failed to build WAF forbidden response"));
+                if violation.blocked {
+                    tracing::warn!(
+                        uri = %parts.uri,
+                        threat_type = ?violation.threat_type,
+                        "WAF blocked request"
+                    );
+                    return Ok(Response::builder()
+                        .status(StatusCode::FORBIDDEN)
+                        .body(AxumBody::from("Request blocked by WAF"))
+                        .expect("Failed to build WAF forbidden response"));
+                } else {
+                    // Monitor mode: log but allow request
+                    tracing::warn!(
+                        uri = %parts.uri,
+                        threat_type = ?violation.threat_type,
+                        "WAF detected threat (monitor mode, not blocking)"
+                    );
+                }
             }
 
             Request::from_parts(parts, AxumBody::from(bytes))

@@ -171,48 +171,80 @@ impl WafEngine {
         if let Some(ref detector) = self.sql_injection
             && let Err(violation) = detector.check(uri, headers, body)
         {
-            warn!(
-                uri = %uri,
-                threat_type = violation.threat_type,
-                "SQL injection detected"
-            );
-            return Err(violation);
+            if violation.blocked {
+                warn!(
+                    uri = %uri,
+                    threat_type = violation.threat_type,
+                    "SQL injection detected"
+                );
+                return Err(violation);
+            } else {
+                debug!(
+                    uri = %uri,
+                    threat_type = violation.threat_type,
+                    "SQL injection detected (log only)"
+                );
+            }
         }
 
         // Check XSS
         if let Some(ref detector) = self.xss
             && let Err(violation) = detector.check(uri, headers, body)
         {
-            warn!(
-                uri = %uri,
-                threat_type = violation.threat_type,
-                "XSS attack detected"
-            );
-            return Err(violation);
+            if violation.blocked {
+                warn!(
+                    uri = %uri,
+                    threat_type = violation.threat_type,
+                    "XSS attack detected"
+                );
+                return Err(violation);
+            } else {
+                debug!(
+                    uri = %uri,
+                    threat_type = violation.threat_type,
+                    "XSS attack detected (log only)"
+                );
+            }
         }
 
         // Check command injection
         if let Some(ref detector) = self.command_injection
             && let Err(violation) = detector.check(uri, headers, body)
         {
-            warn!(
-                uri = %uri,
-                threat_type = violation.threat_type,
-                "Command injection detected"
-            );
-            return Err(violation);
+            if violation.blocked {
+                warn!(
+                    uri = %uri,
+                    threat_type = violation.threat_type,
+                    "Command injection detected"
+                );
+                return Err(violation);
+            } else {
+                debug!(
+                    uri = %uri,
+                    threat_type = violation.threat_type,
+                    "Command injection detected (log only)"
+                );
+            }
         }
 
         // Check path traversal
         if let Some(ref detector) = self.path_traversal
             && let Err(violation) = detector.check(uri, headers, body)
         {
-            warn!(
-                uri = %uri,
-                threat_type = violation.threat_type,
-                "Path traversal detected"
-            );
-            return Err(violation);
+            if violation.blocked {
+                warn!(
+                    uri = %uri,
+                    threat_type = violation.threat_type,
+                    "Path traversal detected"
+                );
+                return Err(violation);
+            } else {
+                debug!(
+                    uri = %uri,
+                    threat_type = violation.threat_type,
+                    "Path traversal detected (log only)"
+                );
+            }
         }
 
         Ok(())
