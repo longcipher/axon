@@ -69,6 +69,7 @@ async fn http3_proxy_basic() -> Result<()> {
             request_body: None,
             response_body: None,
             middlewares: vec![],
+            host: None,
         },
     );
     let mut protocols = ProtocolConfig::default();
