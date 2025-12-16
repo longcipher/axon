@@ -1,0 +1,74 @@
+# Host-Based Routing Configuration Example
+# 
+# This example demonstrates how to route requests to different backends 
+# based on the Host header in the HTTP request.
+#
+# Usage:
+#   cargo run -- serve --config examples/configs/host_based_routing.toml
+#
+# Test with curl:
+#   curl -H "Host: api.example.com" http://localhost:8080/users
+#   curl -H "Host: admin.example.com" http://localhost:8080/dashboard
+#   curl http://localhost:8080/default  # Uses default route (no host specified)
+
+listen_addr = "0.0.0.0:8080"
+
+[health_check]
+enabled = false
+
+[protocols]
+http2_enabled = true
+websocket_enabled = true
+
+# Route for api.example.com - all paths
+[routes."/api"]
+type = "proxy"
+host = "api.example.com"
+target = "http://127.0.0.1:3001"
+
+# Route for admin.example.com - all paths  
+[routes."/admin"]
+type = "proxy"
+host = "admin.example.com"
+target = "http://127.0.0.1:3002"
+path_rewrite = "/"
+
+# Route for static.example.com - serves static files
+[routes."/assets"]
+type = "static"
+host = "static.example.com"
+root = "./examples/static"
+
+# Route for ws.example.com - WebSocket endpoint
+[routes."/ws"]
+type = "websocket"
+host = "ws.example.com"
+target = "ws://127.0.0.1:8081"
+
+# Load balanced route for app.example.com
+[routes."/services"]
+type = "load_balance"
+host = "app.example.com"
+targets = [
+    "http://127.0.0.1:4001",
+    "http://127.0.0.1:4002",
+    "http://127.0.0.1:4003"
+]
+strategy = "round_robin"
+
+# Default fallback route (no host specified)
+# This will match when no other host-specific route matches
+[routes."/"]
+type = "proxy"
+target = "http://127.0.0.1:5000"
+
+  [routes."/".rate_limit]
+  by = "ip"
+  requests = 100
+  period = "1m"
+
+# Another default route for a different path
+[routes."/health"]
+type = "redirect"
+target = "http://127.0.0.1:5000/healthz"
+status_code = 307

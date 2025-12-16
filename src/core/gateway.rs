@@ -165,11 +165,70 @@ impl GatewayService {
     }
 
     /// Longest‑prefix match to find a route configuration for an incoming path.
-    pub fn find_matching_route(&self, path: &str) -> Option<(String, RouteConfig)> {
+    /// If host is provided, will also filter by matching host header.
+    /// Routes with host specified take priority over routes without host.
+    pub fn find_matching_route(
+        &self,
+        path: &str,
+        host: Option<&str>,
+    ) -> Option<(String, RouteConfig)> {
+        // First, try to find routes with matching host
+        let with_host = self
+            .config
+            .routes
+            .iter()
+            .filter(|(prefix, route_config)| {
+                if !path.starts_with(*prefix) {
+                    return false;
+                }
+
+                // Extract host from route config
+                let route_host = match route_config {
+                    RouteConfig::Static { host, .. } => host,
+                    RouteConfig::Redirect { host, .. } => host,
+                    RouteConfig::Proxy { host, .. } => host,
+                    RouteConfig::LoadBalance { host, .. } => host,
+                    RouteConfig::Websocket { host, .. } => host,
+                };
+
+                // If route has a host specified, it must match the request host
+                if let Some(route_host) = route_host {
+                    if let Some(req_host) = host {
+                        route_host.eq_ignore_ascii_case(req_host)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            })
+            .max_by_key(|(prefix, _)| prefix.len());
+
+        // If found a route with matching host, return it
+        if let Some((prefix, config)) = with_host {
+            return Some((prefix.to_string(), config.clone()));
+        }
+
+        // Otherwise, fallback to routes without host requirement
         self.config
             .routes
             .iter()
-            .filter(|(prefix, _)| path.starts_with(*prefix))
+            .filter(|(prefix, route_config)| {
+                if !path.starts_with(*prefix) {
+                    return false;
+                }
+
+                // Only match routes without host specified
+                let route_host = match route_config {
+                    RouteConfig::Static { host, .. } => host,
+                    RouteConfig::Redirect { host, .. } => host,
+                    RouteConfig::Proxy { host, .. } => host,
+                    RouteConfig::LoadBalance { host, .. } => host,
+                    RouteConfig::Websocket { host, .. } => host,
+                };
+
+                route_host.is_none()
+            })
             .max_by_key(|(prefix, _)| prefix.len())
             .map(|(prefix, config)| (prefix.to_string(), config.clone()))
     }

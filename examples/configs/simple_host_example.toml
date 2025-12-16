@@ -1,0 +1,45 @@
+# Example: Can we configure like [routes."/"] with host = "api.example.com"?
+#
+# Answer: YES! This is fully supported.
+#
+# The route key in TOML (e.g., "/", "/api") is just the identifier in the config.
+# It maps to the path prefix for matching requests.
+# You can have multiple routes with the SAME path prefix if they have DIFFERENT hosts.
+#
+# However, TOML requires unique keys in a table, so you cannot literally have
+# two [routes."/"] sections. Instead, you can structure it like this:
+
+listen_addr = "0.0.0.0:8080"
+
+[health_check]
+enabled = false
+
+[protocols]
+http2_enabled = true
+websocket_enabled = true
+
+# Example 1: Root path "/" with specific host
+[routes."/"]
+type = "proxy"
+host = "api.example.com"   # This route ONLY matches when Host header is "api.example.com"
+target = "http://127.0.0.1:3001"
+
+# Example 2: Another path with different host
+[routes."/admin"]
+type = "proxy"
+host = "admin.example.com"  # This route ONLY matches when Host header is "admin.example.com"
+target = "http://127.0.0.1:3002"
+
+# Example 3: Fallback route for unmatched hosts
+# This catches requests that don't match any host-specific route above
+[routes."/fallback"]
+type = "proxy"
+# No host field = matches any host (used as fallback)
+target = "http://127.0.0.1:5555"
+
+# Testing:
+# curl -H "Host: api.example.com" http://localhost:8080/        -> routes to 3001
+# curl -H "Host: api.example.com" http://localhost:8080/test    -> routes to 3001 (prefix match)
+# curl -H "Host: admin.example.com" http://localhost:8080/admin -> routes to 3002
+# curl -H "Host: other.com" http://localhost:8080/               -> no match (404 or fallback)
+# curl http://localhost:8080/fallback                            -> routes to 5555 (fallback)

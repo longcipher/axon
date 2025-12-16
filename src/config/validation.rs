@@ -104,13 +104,21 @@ impl ServerConfigValidator {
 
         // Validate route-specific configurations
         match config {
-            RouteConfig::Proxy { target, .. } => {
+            RouteConfig::Proxy { target, host, .. } => {
                 if let Err(e) = Self::validate_url(target, &format!("route '{path}' target")) {
                     errors.push(e);
                 }
+                if let Some(h) = host {
+                    if let Err(e) = Self::validate_host(h, path) {
+                        errors.push(e);
+                    }
+                }
             }
             RouteConfig::LoadBalance {
-                targets, strategy, ..
+                targets,
+                strategy,
+                host,
+                ..
             } => {
                 if targets.is_empty() {
                     errors.push(ValidationError::InvalidField {
@@ -131,18 +139,30 @@ impl ServerConfigValidator {
                 if let Err(e) = Self::validate_load_balance_strategy(path, strategy) {
                     errors.push(e);
                 }
+
+                if let Some(h) = host {
+                    if let Err(e) = Self::validate_host(h, path) {
+                        errors.push(e);
+                    }
+                }
             }
-            RouteConfig::Static { root, .. } => {
+            RouteConfig::Static { root, host, .. } => {
                 if !std::path::Path::new(root).exists() {
                     errors.push(ValidationError::InvalidField {
                         field: format!("route '{path}' root"),
                         message: format!("Static root directory '{root}' does not exist"),
                     });
                 }
+                if let Some(h) = host {
+                    if let Err(e) = Self::validate_host(h, path) {
+                        errors.push(e);
+                    }
+                }
             }
             RouteConfig::Redirect {
                 target,
                 status_code,
+                host,
                 ..
             } => {
                 if target.starts_with("http://") || target.starts_with("https://") {
@@ -161,11 +181,18 @@ impl ServerConfigValidator {
                         });
                     }
                 }
+
+                if let Some(h) = host {
+                    if let Err(e) = Self::validate_host(h, path) {
+                        errors.push(e);
+                    }
+                }
             }
             RouteConfig::Websocket {
                 target,
                 max_frame_size,
                 max_message_size,
+                host,
                 ..
             } => {
                 if let Err(e) = Self::validate_websocket_url(
@@ -191,6 +218,12 @@ impl ServerConfigValidator {
                             message: "WebSocket max message size must be greater than 0"
                                 .to_string(),
                         });
+                    }
+                }
+
+                if let Some(h) = host {
+                    if let Err(e) = Self::validate_host(h, path) {
+                        errors.push(e);
                     }
                 }
             }
@@ -408,6 +441,36 @@ impl ServerConfigValidator {
     /// Check if status code is valid for redirects
     fn is_valid_redirect_status_code(code: u16) -> bool {
         matches!(code, 301 | 302 | 307 | 308)
+    }
+
+    /// Validate host field format
+    fn validate_host(host: &str, path: &str) -> ValidationResult<()> {
+        if host.is_empty() {
+            return Err(ValidationError::InvalidField {
+                field: format!("route '{path}' host"),
+                message: "Host cannot be empty".to_string(),
+            });
+        }
+
+        // Check for invalid characters
+        if host.contains("://") {
+            return Err(ValidationError::InvalidField {
+                field: format!("route '{path}' host"),
+                message: "Host should not contain protocol (e.g., use 'example.com' not 'http://example.com')".to_string(),
+            });
+        }
+
+        // Simple hostname validation
+        let hostname_regex = Regex::new(r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$").expect("invalid hostname regex");
+
+        if !hostname_regex.is_match(host) {
+            return Err(ValidationError::InvalidField {
+                field: format!("route '{path}' host"),
+                message: format!("Invalid hostname format: '{host}'"),
+            });
+        }
+
+        Ok(())
     }
 
     /// Format multiple validation errors into a single message

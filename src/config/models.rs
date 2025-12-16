@@ -461,12 +461,18 @@ fn default_rate_limit_algorithm() -> RateLimitAlgorithm {
 pub enum RouteConfig {
     Static {
         root: String,
+        /// Optional host header to match (e.g., "api.example.com")
+        #[serde(default)]
+        host: Option<String>,
         rate_limit: Option<RateLimitConfig>,
         #[serde(default)]
         middlewares: Vec<String>,
     },
     Redirect {
         target: String,
+        /// Optional host header to match (e.g., "api.example.com")
+        #[serde(default)]
+        host: Option<String>,
         status_code: Option<u16>,
         rate_limit: Option<RateLimitConfig>,
         #[serde(default)]
@@ -474,6 +480,9 @@ pub enum RouteConfig {
     },
     Proxy {
         target: String,
+        /// Optional host header to match (e.g., "api.example.com")
+        #[serde(default)]
+        host: Option<String>,
         path_rewrite: Option<String>,
         rate_limit: Option<RateLimitConfig>,
         #[serde(default)]
@@ -489,6 +498,9 @@ pub enum RouteConfig {
     },
     LoadBalance {
         targets: Vec<String>,
+        /// Optional host header to match (e.g., "api.example.com")
+        #[serde(default)]
+        host: Option<String>,
         strategy: LoadBalanceStrategy,
         path_rewrite: Option<String>,
         rate_limit: Option<RateLimitConfig>,
@@ -505,6 +517,9 @@ pub enum RouteConfig {
     },
     Websocket {
         target: String,
+        /// Optional host header to match (e.g., "ws.example.com")
+        #[serde(default)]
+        host: Option<String>,
         path_rewrite: Option<String>,
         rate_limit: Option<RateLimitConfig>,
         /// Maximum WebSocket frame size (in bytes)

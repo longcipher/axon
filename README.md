@@ -20,6 +20,7 @@ Ready-to-run scenarios live in `examples/`:
 - Rate limit by IP: `examples/configs/rate_limit_ip.toml` (test: `examples/scripts/rate_limit_ip.sh`)
 - Health checks + LB: `examples/configs/health_checks.toml` (test: `examples/scripts/health_checks.sh`)
 - Path rewrite (proxy): `examples/configs/path_rewrite.toml` (test: `examples/scripts/path_rewrite.sh`)
+- **Host-based routing**: `examples/configs/host_based_routing.toml` (test: `examples/scripts/host_based_routing.sh`)
 - WebSocket echo: `examples/configs/ws_echo.toml` (tests: `examples/scripts/ws_echo.sh`, `ws_binary.sh`, `ws_ping_pong.sh`, `ws_close.sh`, `ws_large_payload.sh`)
 - HTTP/3 (QUIC) proxy (feature-flagged): `examples/configs/http3_proxy.toml` (smoke script: `examples/scripts/http3_proxy.sh`) – requires building with `--features http3`
 - **WAF (Web Application Firewall)**: `examples/configs/waf.toml` – demonstrates SQL injection, XSS, command injection detection, and more
@@ -52,6 +53,7 @@ A high-performance API gateway and reverse proxy built in Rust, implementing hex
   - IP filtering with whitelist/blacklist and CIDR support
 - Static file serving with configurable directories
 - HTTP redirects with custom status codes
+- **Host-based routing**: Route requests to different backends based on the Host header
 - Load balancing (round-robin and random strategies)
 - Path rewriting for proxy and load-balanced routes
 - Health checking for backend services with configurable intervals
@@ -172,6 +174,37 @@ Per-backend override paths:
 "http://service-a:8080" = "/ready"
 "http://service-b:8080" = "/live"
 ```
+
+## Host-Based Routing
+
+Route requests to different backends based on the Host header. Routes with a `host` field take priority over routes without:
+
+```toml
+# Route for api.example.com
+[routes."/api"]
+type = "proxy"
+host = "api.example.com"
+target = "http://api-backend:3001"
+
+# Route for admin.example.com
+[routes."/admin"]
+type = "proxy"
+host = "admin.example.com"
+target = "http://admin-backend:3002"
+
+# Default fallback (no host specified)
+[routes."/"]
+type = "proxy"
+target = "http://default-backend:5000"
+```
+
+When a request arrives:
+
+1. First, Axon looks for routes matching both the path AND host header
+2. If no host-specific match is found, it falls back to routes without a host specified
+3. Within each group, longest-prefix path matching is used
+
+This allows you to run multiple virtual hosts on a single gateway instance.
 
 ## Tracing
 

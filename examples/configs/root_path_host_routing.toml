@@ -1,0 +1,52 @@
+# Root Path Host-Based Routing Example
+#
+# This example demonstrates routing requests to the root path "/"
+# to different backends based on the Host header.
+#
+# Important: In TOML, each route needs a unique key in [routes].
+# The key represents the path prefix that will be matched.
+# To handle multiple hosts on the same path, use different path prefixes
+# or ensure one route has a host and another doesn't (for fallback).
+#
+# Test with:
+#   curl -H "Host: api.example.com" http://localhost:8080/
+#   curl -H "Host: admin.example.com" http://localhost:8080/admin
+#   curl http://localhost:8080/
+
+listen_addr = "0.0.0.0:8080"
+
+[health_check]
+enabled = false
+
+[protocols]
+http2_enabled = true
+websocket_enabled = true
+
+# Default fallback route for root path (no host requirement)
+# This catches all requests that don't match a more specific route
+[routes."/"]
+type = "proxy"
+target = "http://127.0.0.1:5555"
+
+# API host - specific API path
+[routes."/api"]
+type = "proxy"
+host = "api.example.com"
+target = "http://127.0.0.1:3001"
+
+  [routes."/api".rate_limit]
+  by = "ip"
+  requests = 100
+  period = "1m"
+
+# Admin host - specific admin path
+[routes."/admin"]
+type = "proxy"
+host = "admin.example.com"
+target = "http://127.0.0.1:3002"
+
+# Static host - static files
+[routes."/static"]
+type = "static"
+host = "static.example.com"
+root = "./examples/static"
