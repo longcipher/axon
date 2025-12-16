@@ -104,10 +104,7 @@ impl ConfigProvider for HttpConfigProvider {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        net::SocketAddr,
-        sync::{Arc, Mutex},
-    };
+    use std::sync::{Arc, Mutex};
 
     use axum::{Json, Router, routing::get};
     use tokio::net::TcpListener;

@@ -1,0 +1,68 @@
+# WAF (Web Application Firewall) configuration example
+# This example demonstrates how to configure Axon's built-in WAF
+# to protect your APIs from common web attacks.
+
+listen_addr = "0.0.0.0:8080"
+
+# Enable WAF globally
+[waf]
+enabled = true
+
+# SQL injection detection
+[waf.sql_injection]
+enabled = true
+block_mode = true  # Block requests with SQL injection patterns
+
+# XSS (Cross-Site Scripting) detection
+[waf.xss]
+enabled = true
+block_mode = true  # Block requests with XSS patterns
+
+# Command injection detection
+[waf.command_injection]
+enabled = true
+block_mode = true  # Block requests with command injection patterns
+
+# Path traversal detection
+[waf.path_traversal]
+enabled = true
+block_mode = true  # Block path traversal attempts
+
+# Bot detection configuration
+[waf.bot_detection]
+enabled = true
+block_mode = true  # Block malicious bots
+allow_known_bots = true  # Allow good bots like Googlebot, Bingbot
+custom_bad_patterns = [
+    # Add custom regex patterns for bad bots (optional)
+    # "(?i)malicious-bot",
+]
+custom_good_identifiers = [
+    # Add custom identifiers for good bots (optional)
+    # "my-monitoring-bot",
+]
+
+# IP filtering configuration
+[waf.ip_filter]
+enabled = false  # Disabled by default
+whitelist = [
+    # IP whitelist (only these IPs allowed if non-empty)
+    # "192.168.1.0/24",
+    # "10.0.0.1",
+]
+blacklist = [
+    # IP blacklist (these IPs are blocked)
+    # "198.51.100.0/24",
+    # "203.0.113.1",
+]
+
+# Example route configuration - catch-all for testing
+[routes."/"]
+type = "proxy"
+target = "http://localhost:3000"
+
+[health_check]
+enabled = true
+interval_secs = 10
+timeout_secs = 2
+path = "/health"

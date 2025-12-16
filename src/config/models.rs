@@ -1,8 +1,19 @@
-//! Configuration data structures for Axon.
-//!
-//! These types map directly to TOML (also JSON / YAML) configuration files. They are
-//! intentionally serde‑friendly and include defaults so that minimal configs remain concise.
-//! Builders and enums here are considered part of the public API for embedding.
+/// IP filtering configuration
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct IpFilterConfig {
+    /// Enable IP filtering
+    pub enabled: bool,
+    /// IP whitelist (only these IPs allowed if non-empty)
+    pub whitelist: Vec<String>,
+    /// IP blacklist (these IPs are blocked)
+    pub blacklist: Vec<String>,
+}
+// Configuration data structures for Axon.
+//
+// These types map directly to TOML (also JSON / YAML) configuration files. They are
+// intentionally serde‑friendly and include defaults so that minimal configs remain concise.
+// Builders and enums here are considered part of the public API for embedding.
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -163,6 +174,8 @@ pub struct ServerConfig {
     pub protocols: ProtocolConfig,
     #[serde(default)]
     pub static_files: Option<StaticFilesConfig>,
+    #[serde(default)]
+    pub waf: Option<WafConfig>,
 }
 
 impl ServerConfig {
@@ -184,6 +197,7 @@ impl Default for ServerConfig {
             backend_health_paths: HashMap::new(),
             protocols: ProtocolConfig::default(),
             static_files: None,
+            waf: None,
         }
     }
 }
@@ -200,6 +214,7 @@ pub struct ServerConfigBuilder {
     backend_health_paths: HashMap<String, String>,
     protocols: Option<ProtocolConfig>,
     static_files: Option<StaticFilesConfig>,
+    waf: Option<WafConfig>,
 }
 
 impl ServerConfigBuilder {
@@ -266,6 +281,12 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Set WAF configuration
+    pub fn waf(mut self, config: WafConfig) -> Self {
+        self.waf = Some(config);
+        self
+    }
+
     /// Build the final ServerConfig
     pub fn build(self) -> Result<ServerConfig, String> {
         let listen_addr = self
@@ -280,6 +301,7 @@ impl ServerConfigBuilder {
             listen_addr,
             host: self.host,
             port: self.port,
+            waf: self.waf,
             routes: self.routes,
             tls: self.tls,
             health_check: self.health_check.unwrap_or_default(),
@@ -320,7 +342,48 @@ fn default_acme_cache_dir() -> String {
     ".axon/acme_cache".to_string()
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// WAF (Web Application Firewall) configuration
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct WafConfig {
+    pub enabled: bool,
+    pub sql_injection: WafRuleConfig,
+    pub xss: WafRuleConfig,
+    pub path_traversal: WafRuleConfig,
+    pub command_injection: WafRuleConfig,
+    pub bot_detection: BotDetectionConfig,
+    pub ip_filter: IpFilterConfig,
+    // Add more fields as needed (e.g., max_body_size, hot_reload, etc.)
+}
+
+/// Configuration for individual WAF rules
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct WafRuleConfig {
+    /// Enable this rule
+    pub enabled: bool,
+    /// Block requests that violate this rule (true) or just log (false)
+    pub block_mode: bool,
+}
+
+/// Bot detection configuration
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct BotDetectionConfig {
+    /// Enable bot detection
+    pub enabled: bool,
+    /// Block bad bots (true) or just log (false)
+    pub block_mode: bool,
+    /// Allow known good bots (Googlebot, Bingbot, etc.)
+    pub allow_known_bots: bool,
+    /// Custom bad bot patterns (regex)
+    pub custom_bad_patterns: Vec<String>,
+    /// Custom good bot identifiers (substring match)
+    pub custom_good_identifiers: Vec<String>,
+}
+
+/// Health check configuration
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct HealthCheckConfig {
     pub enabled: bool,
@@ -329,19 +392,6 @@ pub struct HealthCheckConfig {
     pub path: String,
     pub unhealthy_threshold: u32,
     pub healthy_threshold: u32,
-}
-
-impl Default for HealthCheckConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            interval_secs: 10,
-            timeout_secs: 2,
-            path: "/health".to_string(),
-            unhealthy_threshold: 3,
-            healthy_threshold: 2,
-        }
-    }
 }
 
 fn default_status_code() -> u16 {

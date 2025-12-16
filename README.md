@@ -7,6 +7,7 @@ Badges: crates.io | docs.rs | Apache-2.0
 ## Quick start
 
 1. Run the gateway
+
   cargo run -- serve --config config.toml
 
 ## Examples and smoke tests
@@ -21,6 +22,7 @@ Ready-to-run scenarios live in `examples/`:
 - Path rewrite (proxy): `examples/configs/path_rewrite.toml` (test: `examples/scripts/path_rewrite.sh`)
 - WebSocket echo: `examples/configs/ws_echo.toml` (tests: `examples/scripts/ws_echo.sh`, `ws_binary.sh`, `ws_ping_pong.sh`, `ws_close.sh`, `ws_large_payload.sh`)
 - HTTP/3 (QUIC) proxy (feature-flagged): `examples/configs/http3_proxy.toml` (smoke script: `examples/scripts/http3_proxy.sh`) – requires building with `--features http3`
+- **WAF (Web Application Firewall)**: `examples/configs/waf.toml` – demonstrates SQL injection, XSS, command injection detection, and more
 
 Validate a config:
 
@@ -41,6 +43,13 @@ A high-performance API gateway and reverse proxy built in Rust, implementing hex
 ## Features
 
 - Protocols: HTTP/1.1 and HTTP/2 (via Hyper/Rustls); WebSocket proxying; optional experimental HTTP/3 (QUIC) via `--features http3`
+- **Web Application Firewall (WAF)**: Built-in security layer with multiple detection rules
+  - SQL injection detection
+  - XSS (Cross-Site Scripting) detection
+  - Command injection detection
+  - Path traversal protection
+  - Bot detection (distinguish good bots like Googlebot from malicious scanners)
+  - IP filtering with whitelist/blacklist and CIDR support
 - Static file serving with configurable directories
 - HTTP redirects with custom status codes
 - Load balancing (round-robin and random strategies)
@@ -196,8 +205,8 @@ Enabling:
 ```bash
 cargo run --features http3 -- serve --config examples/configs/http3_proxy.toml
 ```
-Example smoke test (generates self‑signed cert, requires curl with HTTP/3):
 
+Example smoke test (generates self‑signed cert, requires curl with HTTP/3):
 
 ```bash
 examples/scripts/http3_proxy.sh

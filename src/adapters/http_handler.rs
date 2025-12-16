@@ -19,7 +19,7 @@ use std::{net::SocketAddr, str::FromStr, sync::Arc, time::Instant};
 
 use arc_swap::ArcSwap;
 use axum::{
-    body::Body as AxumBody,
+    body::{Body as AxumBody, to_bytes},
     http::{HeaderMap, StatusCode, header},
 };
 use eyre::{Result, WrapErr};
@@ -148,6 +148,46 @@ impl HttpHandler {
         req: Request<AxumBody>,
         client_addr: Option<SocketAddr>,
     ) -> Result<Response<AxumBody>, eyre::Error> {
+        let gateway = self.current_gateway();
+
+        // WAF Check
+        let req = if gateway.is_waf_enabled() {
+            let (parts, body) = req.into_parts();
+            // Limit body size for WAF inspection (e.g., 10MB)
+            let limit = 10 * 1024 * 1024;
+            let bytes = match to_bytes(body, limit).await {
+                Ok(b) => b,
+                Err(_) => {
+                    return Ok(Response::builder()
+                        .status(StatusCode::PAYLOAD_TOO_LARGE)
+                        .body(AxumBody::from("Request body too large"))
+                        .expect("Failed to build payload too large response"));
+                }
+            };
+
+            let client_ip = client_addr.map(|a| a.ip().to_string());
+            if let Err(violation) = gateway.check_waf(
+                &parts.uri,
+                &parts.headers,
+                Some(&bytes),
+                client_ip.as_deref(),
+            ) {
+                tracing::warn!(
+                    uri = %parts.uri,
+                    threat_type = ?violation.threat_type,
+                    "WAF blocked request"
+                );
+                return Ok(Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .body(AxumBody::from("Request blocked by WAF"))
+                    .expect("Failed to build WAF forbidden response"));
+            }
+
+            Request::from_parts(parts, AxumBody::from(bytes))
+        } else {
+            req
+        };
+
         let path = req.uri().path();
 
         // Handle special paths first

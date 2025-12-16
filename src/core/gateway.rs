@@ -12,6 +12,7 @@
 //! it remains fast and easily testable in isolation.
 use std::{collections::HashMap as StdHashMap, sync::Arc};
 
+use axum::http::{HeaderMap, Uri};
 use scc::HashMap;
 
 use crate::{
@@ -19,6 +20,7 @@ use crate::{
     core::{
         backend::{BackendHealth, BackendUrl},
         rate_limiter::RouteRateLimiter,
+        waf::{SecurityViolation, WafEngine},
     },
 };
 
@@ -32,6 +34,7 @@ pub struct GatewayService {
     config: Arc<ServerConfig>,
     backend_health: Arc<HashMap<String, BackendHealth>>,
     rate_limiters: Arc<HashMap<String, RouteRateLimiter>>, // keyed by route prefix
+    waf_engine: Option<Arc<WafEngine>>,
 }
 
 impl GatewayService {
@@ -88,10 +91,46 @@ impl GatewayService {
             }
         }
 
+        let waf_engine = if let Some(waf_config) = &config.waf {
+            match WafEngine::from_config(waf_config) {
+                Ok(engine) => Some(Arc::new(engine)),
+                Err(e) => {
+                    tracing::error!("Failed to initialize WAF engine: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Self {
             config,
             backend_health,
             rate_limiters,
+            waf_engine,
+        }
+    }
+
+    /// Check if WAF is enabled
+    pub fn is_waf_enabled(&self) -> bool {
+        self.waf_engine
+            .as_ref()
+            .map(|e| e.is_enabled())
+            .unwrap_or(false)
+    }
+
+    /// Check request against WAF rules
+    pub fn check_waf(
+        &self,
+        uri: &Uri,
+        headers: &HeaderMap,
+        body: Option<&[u8]>,
+        client_ip: Option<&str>,
+    ) -> Result<(), SecurityViolation> {
+        if let Some(engine) = &self.waf_engine {
+            engine.check_request(uri, headers, body, client_ip)
+        } else {
+            Ok(())
         }
     }
 

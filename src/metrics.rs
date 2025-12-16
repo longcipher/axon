@@ -38,6 +38,8 @@ pub const AXON_WEBSOCKET_CONNECTIONS_TOTAL: &str = "axon_websocket_connections_t
 pub const AXON_WEBSOCKET_MESSAGES_TOTAL: &str = "axon_websocket_messages_total"; // labels: direction, opcode
 pub const AXON_WEBSOCKET_BYTES_TOTAL: &str = "axon_websocket_bytes_total"; // labels: direction
 pub const AXON_WEBSOCKET_CLOSE_CODES_TOTAL: &str = "axon_websocket_close_codes_total"; // labels: code
+pub const AXON_WAF_VIOLATIONS_TOTAL: &str = "axon_waf_violations_total"; // labels: threat_type, threat_level, blocked
+pub const AXON_WAF_CHECKS_TOTAL: &str = "axon_waf_checks_total"; // labels: result
 
 /// Storage for backend health status gauges
 pub static BACKEND_HEALTH_GAUGES: Lazy<Mutex<HashMap<String, f64>>> = Lazy::new(|| {
@@ -103,6 +105,16 @@ pub static BACKEND_HEALTH_GAUGES: Lazy<Mutex<HashMap<String, f64>>> = Lazy::new(
         AXON_WEBSOCKET_CLOSE_CODES_TOTAL,
         Unit::Count,
         "WebSocket close frames observed (by code)."
+    );
+    describe_counter!(
+        AXON_WAF_VIOLATIONS_TOTAL,
+        Unit::Count,
+        "Total WAF violations detected. Labels: threat_type, threat_level, blocked."
+    );
+    describe_counter!(
+        AXON_WAF_CHECKS_TOTAL,
+        Unit::Count,
+        "Total WAF checks performed. Labels: result (pass/fail)."
     );
 
     Mutex::new(HashMap::new())
@@ -291,6 +303,26 @@ pub fn get_current_metrics() -> HashMap<String, f64> {
     }
 
     metrics
+}
+
+/// Record a WAF violation
+pub fn record_waf_violation(threat_type: &str, threat_level: &str, blocked: bool) {
+    counter!(
+        AXON_WAF_VIOLATIONS_TOTAL,
+        "threat_type" => threat_type.to_string(),
+        "threat_level" => threat_level.to_string(),
+        "blocked" => if blocked { "true" } else { "false" }.to_string(),
+    )
+    .increment(1);
+}
+
+/// Record a WAF check (pass or fail)
+pub fn record_waf_check(passed: bool) {
+    counter!(
+        AXON_WAF_CHECKS_TOTAL,
+        "result" => if passed { "pass" } else { "fail" }.to_string(),
+    )
+    .increment(1);
 }
 
 #[cfg(test)]
