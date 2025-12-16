@@ -2,9 +2,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::body::Body as AxumBody;
-use bytes::Bytes;
 use eyre::Result;
-use http_body_util::{BodyExt, Full};
+use http_body_util::BodyExt;
 use hyper::{Request, Response, Version, header, header::HeaderValue};
 use hyper_rustls::HttpsConnector;
 use hyper_util::{
@@ -27,7 +26,7 @@ use crate::ports::http_client::{HttpClient, HttpClientError, HttpClientResult};
 /// This adapter is intentionally minimal; higher level retries / circuit breaking
 /// can be layered on a different abstraction if required.
 pub struct HttpClientAdapter {
-    client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
+    client: Client<HttpsConnector<HttpConnector>, AxumBody>,
 }
 
 impl HttpClientAdapter {
@@ -72,7 +71,7 @@ impl HttpClientAdapter {
             .wrap_connector(http_connector);
 
         // Create client with TokioExecutor for async runtime
-        let client = Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https_connector);
+        let client = Client::builder(TokioExecutor::new()).build::<_, AxumBody>(https_connector);
 
         tracing::info!("Created new HTTP client with HTTP/2 and HTTP/1.1 support");
         Ok(Self { client })
@@ -177,28 +176,8 @@ impl HttpClient for HttpClientAdapter {
         );
         tracing::debug!("Outgoing request headers: {:?}", parts.headers);
 
-        // Collect request body
-        let bytes = axum_body
-            .collect()
-            .await
-            .map_err(|e| {
-                HttpClientError::ConnectionError(format!("Failed to collect request body: {e}"))
-            })?
-            .to_bytes();
-
-        // Fix headers after collecting body:
-        // Remove Transfer-Encoding (body is now buffered) and ensure Content-Length is set
-        parts.headers.remove(header::TRANSFER_ENCODING);
-        if !bytes.is_empty() {
-            parts.headers.insert(
-                header::CONTENT_LENGTH,
-                HeaderValue::from_str(&bytes.len().to_string())
-                    .unwrap_or_else(|_| HeaderValue::from_static("0")),
-            );
-        }
-
-        let body = Full::new(bytes);
-        let outgoing_request = Request::from_parts(parts, body);
+        // Use the streaming body directly
+        let outgoing_request = Request::from_parts(parts, axum_body);
 
         let method_for_error_log = outgoing_request.method().clone();
         let uri_for_error_log = outgoing_request.uri().clone();
@@ -248,7 +227,7 @@ impl HttpClient for HttpClientAdapter {
             .method("HEAD")
             .uri(url)
             .version(Version::HTTP_11)
-            .body(Full::new(Bytes::new()))
+            .body(AxumBody::empty())
             .map_err(|e| HttpClientError::InvalidRequest(e.to_string()))?;
 
         tracing::debug!("Health checking URL: {} (Version set to HTTP/1.1)", url);

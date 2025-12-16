@@ -13,6 +13,7 @@
 use std::{collections::HashMap as StdHashMap, sync::Arc};
 
 use axum::http::{HeaderMap, Uri};
+use matchit::Router;
 use scc::HashMap;
 
 use crate::{
@@ -35,6 +36,8 @@ pub struct GatewayService {
     backend_health: Arc<HashMap<String, BackendHealth>>,
     rate_limiters: Arc<HashMap<String, RouteRateLimiter>>, // keyed by route prefix
     waf_engine: Option<Arc<WafEngine>>,
+    host_routers: Arc<StdHashMap<String, Router<String>>>,
+    global_router: Arc<Router<String>>,
 }
 
 impl GatewayService {
@@ -103,11 +106,51 @@ impl GatewayService {
             None
         };
 
+        // Build matchit routers for O(1) lookup
+        let mut host_routers: StdHashMap<String, Router<String>> = StdHashMap::new();
+        let mut global_router = Router::new();
+
+        for (prefix, route_config) in &config.routes {
+            let route_host = match route_config {
+                RouteConfig::Static { host, .. } => host,
+                RouteConfig::Redirect { host, .. } => host,
+                RouteConfig::Proxy { host, .. } => host,
+                RouteConfig::LoadBalance { host, .. } => host,
+                RouteConfig::Websocket { host, .. } => host,
+            };
+
+            let router = if let Some(h) = route_host {
+                host_routers.entry(h.to_lowercase()).or_default()
+            } else {
+                &mut global_router
+            };
+
+            // Insert exact match
+            if let Err(e) = router.insert(prefix, prefix.clone()) {
+                tracing::error!("Failed to insert route '{}': {}", prefix, e);
+            }
+
+            // Insert wildcard match for sub-paths
+            // If prefix is "/", wildcard is "/{*rest}"
+            // If prefix is "/api", wildcard is "/api/{*rest}"
+            let wildcard = if prefix == "/" {
+                "/{*rest}".to_string()
+            } else {
+                format!("{}/{{*rest}}", prefix.trim_end_matches('/'))
+            };
+
+            if let Err(e) = router.insert(&wildcard, prefix.clone()) {
+                tracing::error!("Failed to insert wildcard route '{}': {}", wildcard, e);
+            }
+        }
+
         Self {
             config,
             backend_health,
             rate_limiters,
             waf_engine,
+            host_routers: Arc::new(host_routers),
+            global_router: Arc::new(global_router),
         }
     }
 
@@ -172,65 +215,26 @@ impl GatewayService {
         path: &str,
         host: Option<&str>,
     ) -> Option<(String, RouteConfig)> {
-        // First, try to find routes with matching host
-        let with_host = self
-            .config
-            .routes
-            .iter()
-            .filter(|(prefix, route_config)| {
-                if !path.starts_with(*prefix) {
-                    return false;
-                }
-
-                // Extract host from route config
-                let route_host = match route_config {
-                    RouteConfig::Static { host, .. } => host,
-                    RouteConfig::Redirect { host, .. } => host,
-                    RouteConfig::Proxy { host, .. } => host,
-                    RouteConfig::LoadBalance { host, .. } => host,
-                    RouteConfig::Websocket { host, .. } => host,
-                };
-
-                // If route has a host specified, it must match the request host
-                if let Some(route_host) = route_host {
-                    if let Some(req_host) = host {
-                        route_host.eq_ignore_ascii_case(req_host)
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            })
-            .max_by_key(|(prefix, _)| prefix.len());
-
-        // If found a route with matching host, return it
-        if let Some((prefix, config)) = with_host {
-            return Some((prefix.to_string(), config.clone()));
+        // 1. Try to find a match in the host-specific router
+        if let Some(req_host) = host
+            && let Some(router) = self.host_routers.get(&req_host.to_lowercase())
+            && let Ok(match_) = router.at(path)
+        {
+            let prefix = match_.value;
+            if let Some(config) = self.config.routes.get(prefix) {
+                return Some((prefix.clone(), config.clone()));
+            }
         }
 
-        // Otherwise, fallback to routes without host requirement
-        self.config
-            .routes
-            .iter()
-            .filter(|(prefix, route_config)| {
-                if !path.starts_with(*prefix) {
-                    return false;
-                }
+        // 2. Fallback to global router (routes without host)
+        if let Ok(match_) = self.global_router.at(path) {
+            let prefix = match_.value;
+            if let Some(config) = self.config.routes.get(prefix) {
+                return Some((prefix.clone(), config.clone()));
+            }
+        }
 
-                // Only match routes without host specified
-                let route_host = match route_config {
-                    RouteConfig::Static { host, .. } => host,
-                    RouteConfig::Redirect { host, .. } => host,
-                    RouteConfig::Proxy { host, .. } => host,
-                    RouteConfig::LoadBalance { host, .. } => host,
-                    RouteConfig::Websocket { host, .. } => host,
-                };
-
-                route_host.is_none()
-            })
-            .max_by_key(|(prefix, _)| prefix.len())
-            .map(|(prefix, config)| (prefix.to_string(), config.clone()))
+        None
     }
 
     /// Return the global health check configuration.

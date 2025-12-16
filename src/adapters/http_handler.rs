@@ -32,7 +32,10 @@ use crate::{
     adapters::FileSystemAdapter,
     config::models::{RouteConfig, ServerConfig},
     core::GatewayService,
-    ports::{file_system::FileSystem, http_client::HttpClient},
+    ports::{
+        file_system::FileSystem,
+        http_client::{HttpClient, HttpClientError},
+    },
     tracing_setup,
     utils::ConnectionTracker,
 };
@@ -1013,10 +1016,16 @@ impl HttpHandler {
                     backend_duration_ms = backend_duration.as_millis(),
                     "backend failed"
                 );
+
+                let status = match e {
+                    HttpClientError::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
+                    _ => StatusCode::BAD_GATEWAY,
+                };
+
                 Ok(Response::builder()
-                    .status(StatusCode::BAD_GATEWAY)
+                    .status(status)
                     .body(AxumBody::from("Backend request failed"))
-                    .wrap_err("Failed to build bad gateway response")?)
+                    .wrap_err("Failed to build error response")?)
             }
         }
     }
