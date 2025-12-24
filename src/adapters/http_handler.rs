@@ -20,7 +20,7 @@ use std::{net::SocketAddr, str::FromStr, sync::Arc, time::Instant};
 use arc_swap::ArcSwap;
 use axum::{
     body::{Body as AxumBody, to_bytes},
-    http::{HeaderMap, StatusCode, header},
+    http::{StatusCode, header},
 };
 use eyre::{Result, WrapErr};
 use hyper::{Request, Response};
@@ -198,16 +198,15 @@ impl HttpHandler {
             // Fix headers after body inspection:
             // Remove Transfer-Encoding and set Content-Length for the buffered body
             parts.headers.remove(header::TRANSFER_ENCODING);
-            if !bytes.is_empty() {
-                parts.headers.insert(
-                    header::CONTENT_LENGTH,
-                    bytes
-                        .len()
-                        .to_string()
-                        .parse()
-                        .expect("valid content-length"),
-                );
-            }
+            parts.headers.remove(header::TRAILER);
+            parts.headers.insert(
+                header::CONTENT_LENGTH,
+                bytes
+                    .len()
+                    .to_string()
+                    .parse()
+                    .expect("valid content-length"),
+            );
 
             Request::from_parts(parts, AxumBody::from(bytes))
         } else {
@@ -363,7 +362,7 @@ impl HttpHandler {
             AXON_BACKEND_REQUESTS_TOTAL, AXON_REQUEST_DURATION_SECONDS, AXON_REQUESTS_TOTAL,
             get_current_metrics, init_metrics,
         };
-        let _ = init_metrics(); // idempotent
+        let _ = init_metrics().await; // idempotent
 
         let mut out = String::new();
         let active_conns = self.connection_tracker.active_connection_count();
@@ -847,7 +846,8 @@ impl HttpHandler {
             conn_info.increment_requests();
         }
 
-        let result = self.proxy_request_to_backend(req).await;
+        let client_ip = client_addr.map(|a| a.ip().to_string());
+        let result = self.proxy_request_to_backend(req, client_ip).await;
 
         // Decrement request count
         if let Some(ref conn_info) = connection_info {
@@ -861,14 +861,19 @@ impl HttpHandler {
     async fn proxy_request_to_backend(
         &self,
         mut req: Request<AxumBody>,
+        client_ip: Option<String>,
     ) -> Result<Response<AxumBody>, eyre::Error> {
         let path = req.uri().path();
 
         // Extract host from request headers
-        let host = req
+        let host_header_value = req
             .headers()
             .get(header::HOST)
             .and_then(|h| h.to_str().ok())
+            .map(|s| s.to_string());
+
+        let host = host_header_value
+            .as_deref()
             .map(|h| h.split(':').next().unwrap_or(h)); // Remove port if present
 
         // Find the matching route configuration
@@ -965,14 +970,34 @@ impl HttpHandler {
 
         // Add forwarded headers
         let headers = req.headers_mut();
-        if let Some(client_ip) = self.extract_client_ip(headers) {
-            headers.insert(
-                "X-Forwarded-For",
-                client_ip
-                    .parse()
-                    .map_err(|e| eyre::eyre!("Failed to parse client IP: {}", e))?,
-            );
+
+        // X-Forwarded-For: append client IP
+        if let Some(ip) = client_ip {
+            if let Some(existing) = headers.get("X-Forwarded-For") {
+                if let Ok(val) = existing.to_str() {
+                    let new_val = format!("{val}, {ip}");
+                    headers.insert(
+                        "X-Forwarded-For",
+                        new_val
+                            .parse()
+                            .map_err(|e| eyre::eyre!("Failed to parse XFF: {}", e))?,
+                    );
+                } else {
+                    headers.insert(
+                        "X-Forwarded-For",
+                        ip.parse()
+                            .map_err(|e| eyre::eyre!("Failed to parse client IP: {}", e))?,
+                    );
+                }
+            } else {
+                headers.insert(
+                    "X-Forwarded-For",
+                    ip.parse()
+                        .map_err(|e| eyre::eyre!("Failed to parse client IP: {}", e))?,
+                );
+            }
         }
+
         // Best-effort forwarded proto based on URI scheme
         let fwd_proto = original_uri.scheme_str().unwrap_or("http");
         headers.insert(
@@ -981,11 +1006,17 @@ impl HttpHandler {
                 .parse()
                 .map_err(|e| eyre::eyre!("Failed to parse protocol: {}", e))?,
         );
+
+        // X-Forwarded-Host: prefer original Host header, fallback to URI host
+        let fwd_host = original_uri
+            .host()
+            .map(String::from)
+            .or(host_header_value)
+            .unwrap_or_else(|| "unknown".to_string());
+
         headers.insert(
             "X-Forwarded-Host",
-            original_uri
-                .host()
-                .unwrap_or("unknown")
+            fwd_host
                 .parse()
                 .map_err(|e| eyre::eyre!("Failed to parse host: {}", e))?,
         );
@@ -1028,27 +1059,6 @@ impl HttpHandler {
                     .wrap_err("Failed to build error response")?)
             }
         }
-    }
-
-    /// Extract best candidate client IP (prefers existing X‑Forwarded‑For chain).
-    fn extract_client_ip(&self, headers: &HeaderMap) -> Option<String> {
-        // Check various forwarded headers
-        #[allow(clippy::collapsible_if)]
-        if let Some(forwarded_for) = headers.get("X-Forwarded-For") {
-            if let Ok(value) = forwarded_for.to_str() {
-                // Get the first IP in the chain
-                return value.split(',').next().map(|ip| ip.trim().to_string());
-            }
-        }
-
-        #[allow(clippy::collapsible_if)]
-        if let Some(real_ip) = headers.get("X-Real-IP") {
-            if let Ok(value) = real_ip.to_str() {
-                return Some(value.to_string());
-            }
-        }
-
-        None
     }
 }
 

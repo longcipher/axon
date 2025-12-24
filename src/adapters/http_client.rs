@@ -124,6 +124,15 @@ impl HttpClient for HttpClientAdapter {
     ) -> HttpClientResult<Response<AxumBody>> {
         Self::add_common_headers(&mut req);
 
+        // Clean up hop-by-hop headers to avoid confusing the backend
+        req.headers_mut().remove(header::CONNECTION);
+        req.headers_mut().remove(header::UPGRADE);
+        req.headers_mut().remove(header::PROXY_AUTHENTICATE);
+        req.headers_mut().remove(header::PROXY_AUTHORIZATION);
+        req.headers_mut().remove(header::TE);
+        req.headers_mut().remove(header::TRAILER);
+        req.headers_mut().remove(header::TRANSFER_ENCODING);
+
         let client = self.client.clone();
 
         // Extract backend information for logging and metrics
@@ -147,22 +156,15 @@ impl HttpClient for HttpClientAdapter {
         );
         let _enter = span.enter();
 
-        // Set Host header if not present
-        if let Some(host_str) = req.uri().host() {
-            let host_header_val = if let Some(port) = req.uri().port() {
-                HeaderValue::from_str(&format!("{host_str}:{}", port.as_u16()))
-                    .unwrap_or_else(|_| HeaderValue::from_static(""))
-            } else {
-                HeaderValue::from_str(host_str).unwrap_or_else(|_| HeaderValue::from_static(""))
-            };
-            if !host_header_val.is_empty() {
-                req.headers_mut()
-                    .insert(hyper::header::HOST, host_header_val);
+        // Set Host header from the target URI authority (host:port)
+        if let Some(authority) = req.uri().authority() {
+            if let Ok(host_val) = HeaderValue::from_str(authority.as_str()) {
+                req.headers_mut().insert(header::HOST, host_val);
             }
         } else {
-            tracing::error!("Outgoing URI has no host: {}", req.uri());
+            tracing::error!("Outgoing URI has no authority: {}", req.uri());
             return Err(HttpClientError::InvalidRequest(
-                "Outgoing URI has no host".to_string(),
+                "Outgoing URI has no authority".to_string(),
             ));
         }
 

@@ -9,6 +9,7 @@ use axon::{
     },
     config::models::ServerConfig,
     core::GatewayService,
+    metrics,
     ports::{config_provider::ConfigProvider, http_client::HttpClient},
     tracing_setup,
     utils::graceful_shutdown::GracefulShutdown,
@@ -140,6 +141,11 @@ async fn main() -> Result<()> {
 
     // Configure tracing_subscriber for JSON output with OpenTelemetry
     tracing_setup::init_tracing().map_err(|e| eyre!("Failed to initialize tracing: {}", e))?;
+
+    // Initialize OpenTelemetry metrics
+    metrics::init_metrics()
+        .await
+        .map_err(|e| eyre!("Failed to initialize metrics: {}", e))?;
 
     tracing::info!("Loading initial configuration from {config_path}");
 
