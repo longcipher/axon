@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use eyre::{Context, Result};
+use hpx::Client;
 use tokio::sync::mpsc;
-use wreq::Client;
 
 use crate::{config::models::ServerConfig, ports::config_provider::ConfigProvider};
 

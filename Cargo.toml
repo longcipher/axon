@@ -26,21 +26,21 @@ http3 = []
 [dependencies]
 async-trait = "0.1.89"
 axum = { version = "0.8.8", features = ["http1", "http2", "ws"] }
-clap = { version = "4.5.53", features = ["derive"] }
+clap = { version = "4.5.56", features = ["derive"] }
 futures-util = { version = "0.3.31", default-features = false, features = [
     "std",
 ] }
 hyper = { version = "1.8.1", features = ["full"] }
 hyper-rustls = "0.27.7"
-rustls = "0.23.35"
+rustls = "0.23.36"
 rustls-native-certs = "0.8.3"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.148"
-thiserror = "2.0.17"
-tokio = { version = "1.48.0", features = ["full"] }
-tokio-stream = { version = "0.1.17", features = ["net"] }
-tokio-util = { version = "0.7.17", features = ["compat"] }
-tower = "0.5.2"
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+tokio = { version = "1.49.0", features = ["full"] }
+tokio-stream = { version = "0.1.18", features = ["net"] }
+tokio-util = { version = "0.7.18", features = ["compat"] }
+tower = "0.5.3"
 tower-http = { version = "0.6.8", features = [
     "fs",
     "trace",
@@ -68,19 +68,19 @@ opentelemetry-otlp = { version = "0.31.0", features = [
 ] }
 opentelemetry-semantic-conventions = "0.31.0"
 opentelemetry_sdk = { version = "0.31.0", features = ["metrics"] }
-tonic = "0.14.2"
+tonic = "0.14.3"
 
 http = "1.4.0"
 notify = "8.2.0"
 rand = "0.9.2"
 
-arc-swap = "1.8.0"
-scc = "3.4.8"
+arc-swap = "1.8.1"
+scc = "3.5.5"
 
 # Additional dependencies for hexagonal architecture
 bytes = "1.11.0"
 http-body-util = "0.1.3"
-hyper-util = { version = "0.1.19", features = ["full"] }
+hyper-util = { version = "0.1.20", features = ["full"] }
 
 # Rate limiting dependencies
 governor = "0.10.4"
@@ -91,22 +91,20 @@ tokio-tungstenite = { version = "0.28.0", features = [
 ] }
 
 base64 = "0.22.1"
-chrono = { version = "0.4.42", features = ["serde"] }
+chrono = { version = "0.4.43", features = ["serde"] }
 humantime = "2.3.0"
-once_cell = "1.19.0"
+once_cell = "1.21.3"
 regex = "1.12.2"
 sha1 = "0.10.6"
-url = "2.5.7"
+url = "2.5.8"
 urlencoding = "2.1.3"
-uuid = { version = "1.19.0", features = ["v4", "serde"] }
+uuid = { version = "1.20.0", features = ["v4", "serde"] }
 
-wreq = { git = "https://github.com/0x676e67/wreq", tag = "v6.0.0-rc.26", default-features = false, features = [
-    "json",
-] }
-rustls-acme = { version = "0.14.1", features = ["axum", "tokio"] }
+hpx = { version = "0.1.5", features = ["json"] }
+rustls-acme = { version = "0.15.1", features = ["axum", "tokio"] }
 rustls-pemfile = "2.2.0"
-tls-listener = { version = "0.11.0", features = ["rustls", "tokio-net"] }
-tokio-rustls = "0.26.1"
+tls-listener = { version = "0.11.2", features = ["rustls", "tokio-net"] }
+tokio-rustls = "0.26.4"
 
 # HTTP/3 (QUIC) support crates (feature currently experimental)
 h3 = "0.0.8"
@@ -115,7 +113,7 @@ matchit = "0.9.1"
 quinn = { version = "0.11.9", default-features = true }
 
 [dev-dependencies]
-rcgen = "0.14.6"
+rcgen = "0.14.7"
 tempfile = "3.24.0"
 
 [package.metadata.cargo-machete]
