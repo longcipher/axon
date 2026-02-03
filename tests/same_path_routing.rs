@@ -4,7 +4,7 @@ mod test {
     use std::sync::Arc;
 
     use axon::{
-        config::models::{RouteConfig, ServerConfig},
+        config::models::{RouteConfig, RouteConfigEntry, ServerConfig},
         core::GatewayService,
     };
 
@@ -13,42 +13,39 @@ mod test {
         let mut config = ServerConfig::default();
         config.listen_addr = "127.0.0.1:8080".to_string();
 
-        // Route 1: "/" with host "api.example.com"
-        config.routes.insert(
-            "/api-host".to_string(), // Unique key but path will be checked
-            RouteConfig::Proxy {
-                target: "http://api-backend:3001".to_string(),
-                host: Some("api.example.com".to_string()),
-                path_rewrite: None,
-                rate_limit: None,
-                request_headers: None,
-                response_headers: None,
-                request_body: None,
-                response_body: None,
-                middlewares: vec![],
-            },
-        );
-
-        // Route 2: "/" without host (fallback)
+        // Multiple routes on "/" with different hosts using RouteConfigEntry::Multiple
         config.routes.insert(
             "/".to_string(),
-            RouteConfig::Proxy {
-                target: "http://fallback-backend:5555".to_string(),
-                host: None,
-                path_rewrite: None,
-                rate_limit: None,
-                request_headers: None,
-                response_headers: None,
-                request_body: None,
-                response_body: None,
-                middlewares: vec![],
-            },
+            RouteConfigEntry::Multiple(vec![
+                RouteConfig::Proxy {
+                    target: "http://api-backend:3001".to_string(),
+                    host: Some("api.example.com".to_string()),
+                    path_rewrite: None,
+                    rate_limit: None,
+                    request_headers: None,
+                    response_headers: None,
+                    request_body: None,
+                    response_body: None,
+                    middlewares: vec![],
+                },
+                RouteConfig::Proxy {
+                    target: "http://fallback-backend:5555".to_string(),
+                    host: None,
+                    path_rewrite: None,
+                    rate_limit: None,
+                    request_headers: None,
+                    response_headers: None,
+                    request_body: None,
+                    response_body: None,
+                    middlewares: vec![],
+                },
+            ]),
         );
 
         let gateway = GatewayService::new(Arc::new(config));
 
-        // Test 1: Request to /api-host with matching host
-        let route = gateway.find_matching_route("/api-host/users", Some("api.example.com"));
+        // Test 1: Request to / with matching host api.example.com
+        let route = gateway.find_matching_route("/users", Some("api.example.com"));
         assert!(route.is_some());
         let (_, route_config) = route.unwrap();
         if let RouteConfig::Proxy { target, .. } = route_config {

@@ -237,7 +237,7 @@ impl HttpHandler {
             tracing::Span::current().record("route.prefix", &prefix);
 
             // Apply route-level rate limiting if configured
-            if let Some(limiter) = gateway.get_rate_limiter(&prefix).await
+            if let Some(limiter) = gateway.get_rate_limiter(&prefix, host).await
                 && let Err(resp) = limiter.check(&req)
             {
                 return Ok(*resp);

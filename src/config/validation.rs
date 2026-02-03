@@ -6,7 +6,7 @@ use eyre::Result;
 use regex::Regex;
 
 use crate::config::models::{
-    LoadBalanceStrategy, RateLimitConfig, RouteConfig, ServerConfig, TlsConfig,
+    LoadBalanceStrategy, RateLimitConfig, RouteConfig, RouteConfigEntry, ServerConfig, TlsConfig,
 };
 
 /// Validation result type alias
@@ -53,9 +53,11 @@ impl ServerConfigValidator {
                 field: "routes".to_string(),
             });
         } else {
-            for (path, route_config) in &config.routes {
-                if let Err(mut route_errors) = Self::validate_single_route(path, route_config) {
-                    errors.append(&mut route_errors);
+            for (path, entry) in &config.routes {
+                for route_config in entry.iter() {
+                    if let Err(mut route_errors) = Self::validate_single_route(path, route_config) {
+                        errors.append(&mut route_errors);
+                    }
                 }
             }
         }
@@ -399,16 +401,55 @@ impl ServerConfigValidator {
         }
     }
 
+    /// Extract host from a RouteConfig
+    fn get_route_host(route: &RouteConfig) -> Option<&String> {
+        match route {
+            RouteConfig::Static { host, .. } => host.as_ref(),
+            RouteConfig::Redirect { host, .. } => host.as_ref(),
+            RouteConfig::Proxy { host, .. } => host.as_ref(),
+            RouteConfig::LoadBalance { host, .. } => host.as_ref(),
+            RouteConfig::Websocket { host, .. } => host.as_ref(),
+        }
+    }
+
     /// Check for conflicting route paths
+    /// Routes with the same path are allowed if they have different hosts.
+    /// Conflicts occur when:
+    /// 1. Same path with same host (or both without host)
+    /// 2. Path prefix conflicts between routes without hosts
     fn check_route_conflicts(
-        routes: &std::collections::HashMap<String, RouteConfig>,
+        routes: &std::collections::HashMap<String, RouteConfigEntry>,
     ) -> Result<(), Vec<ValidationError>> {
-        let route_paths: Vec<&String> = routes.keys().collect();
         let mut errors = Vec::new();
 
-        for (i, path1) in route_paths.iter().enumerate() {
-            for path2 in route_paths.iter().skip(i + 1) {
-                if Self::paths_conflict(path1, path2) {
+        // Collect all (path, host) pairs
+        let mut route_entries: Vec<(&String, Option<&String>)> = Vec::new();
+        for (path, entry) in routes {
+            for route in entry.iter() {
+                route_entries.push((path, Self::get_route_host(route)));
+            }
+        }
+
+        // Check for duplicate path+host combinations
+        for (i, (path1, host1)) in route_entries.iter().enumerate() {
+            for (path2, host2) in route_entries.iter().skip(i + 1) {
+                // Same path + same host = conflict
+                if path1 == path2 {
+                    let host1_lower = host1.map(|h| h.to_lowercase());
+                    let host2_lower = host2.map(|h| h.to_lowercase());
+                    if host1_lower == host2_lower {
+                        let host_desc = host1
+                            .map(|h| format!(" (host: {h})"))
+                            .unwrap_or_else(|| " (no host)".to_string());
+                        errors.push(ValidationError::RouteConflict {
+                            message: format!(
+                                "Duplicate route configuration for path '{path1}'{host_desc}"
+                            ),
+                        });
+                    }
+                }
+                // Check path prefix conflicts only for routes without hosts
+                else if host1.is_none() && host2.is_none() && Self::paths_conflict(path1, path2) {
                     errors.push(ValidationError::RouteConflict {
                         message: format!("Routes '{path1}' and '{path2}' have conflicting paths"),
                     });

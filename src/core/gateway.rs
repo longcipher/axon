@@ -17,13 +17,36 @@ use matchit::Router;
 use scc::HashMap;
 
 use crate::{
-    config::{HealthCheckConfig, HealthStatus, RouteConfig, ServerConfig},
+    config::{HealthCheckConfig, HealthStatus, RouteConfig, RouteConfigEntry, ServerConfig},
     core::{
         backend::{BackendHealth, BackendUrl},
         rate_limiter::RouteRateLimiter,
         waf::{SecurityViolation, WafEngine},
     },
 };
+
+/// Unique key for a route (path + optional host)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RouteKey {
+    prefix: String,
+    host: Option<String>,
+}
+
+impl RouteKey {
+    fn new(prefix: String, host: Option<String>) -> Self {
+        Self {
+            prefix,
+            host: host.map(|h| h.to_lowercase()),
+        }
+    }
+
+    fn to_rate_limiter_key(&self) -> String {
+        match &self.host {
+            Some(h) => format!("{}@{}", self.prefix, h),
+            None => self.prefix.clone(),
+        }
+    }
+}
 
 /// Central orchestrator for routing, backend selection, health status lookup
 /// and per‑route rate limiting. An instance is cheap to clone (Arc inside).
@@ -34,7 +57,7 @@ use crate::{
 pub struct GatewayService {
     config: Arc<ServerConfig>,
     backend_health: Arc<HashMap<String, BackendHealth>>,
-    rate_limiters: Arc<HashMap<String, RouteRateLimiter>>, // keyed by route prefix
+    rate_limiters: Arc<HashMap<String, RouteRateLimiter>>, // keyed by route prefix + host
     waf_engine: Option<Arc<WafEngine>>,
     host_routers: Arc<StdHashMap<String, Router<String>>>,
     global_router: Arc<Router<String>>,
@@ -67,28 +90,42 @@ impl GatewayService {
         }
 
         // Build route-level rate limiters
-        for (prefix, route) in &config.routes {
-            let rate_limit_cfg_opt = match route {
-                RouteConfig::Proxy { rate_limit, .. } => rate_limit,
-                RouteConfig::LoadBalance { rate_limit, .. } => rate_limit,
-                RouteConfig::Static { rate_limit, .. } => rate_limit,
-                RouteConfig::Redirect { rate_limit, .. } => rate_limit,
-                RouteConfig::Websocket { rate_limit, .. } => rate_limit,
-            };
-            if let Some(rate_cfg) = rate_limit_cfg_opt {
-                match RouteRateLimiter::new(rate_cfg) {
-                    Ok(limiter) => {
-                        let _ = tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current()
-                                .block_on(rate_limiters.insert_async(prefix.clone(), limiter))
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to create rate limiter for route '{}': {}",
-                            prefix,
-                            e
-                        );
+        for (prefix, entry) in &config.routes {
+            for route in entry.iter() {
+                let (rate_limit_cfg_opt, route_host) = match route {
+                    RouteConfig::Proxy {
+                        rate_limit, host, ..
+                    } => (rate_limit, host),
+                    RouteConfig::LoadBalance {
+                        rate_limit, host, ..
+                    } => (rate_limit, host),
+                    RouteConfig::Static {
+                        rate_limit, host, ..
+                    } => (rate_limit, host),
+                    RouteConfig::Redirect {
+                        rate_limit, host, ..
+                    } => (rate_limit, host),
+                    RouteConfig::Websocket {
+                        rate_limit, host, ..
+                    } => (rate_limit, host),
+                };
+                if let Some(rate_cfg) = rate_limit_cfg_opt {
+                    let key = RouteKey::new(prefix.clone(), route_host.clone());
+                    match RouteRateLimiter::new(rate_cfg) {
+                        Ok(limiter) => {
+                            let _ = tokio::task::block_in_place(|| {
+                                tokio::runtime::Handle::current().block_on(
+                                    rate_limiters.insert_async(key.to_rate_limiter_key(), limiter),
+                                )
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to create rate limiter for route '{}': {}",
+                                prefix,
+                                e
+                            );
+                        }
                     }
                 }
             }
@@ -110,37 +147,35 @@ impl GatewayService {
         let mut host_routers: StdHashMap<String, Router<String>> = StdHashMap::new();
         let mut global_router = Router::new();
 
-        for (prefix, route_config) in &config.routes {
-            let route_host = match route_config {
-                RouteConfig::Static { host, .. } => host,
-                RouteConfig::Redirect { host, .. } => host,
-                RouteConfig::Proxy { host, .. } => host,
-                RouteConfig::LoadBalance { host, .. } => host,
-                RouteConfig::Websocket { host, .. } => host,
-            };
+        for (prefix, entry) in &config.routes {
+            for route_config in entry.iter() {
+                let route_host = match route_config {
+                    RouteConfig::Static { host, .. } => host,
+                    RouteConfig::Redirect { host, .. } => host,
+                    RouteConfig::Proxy { host, .. } => host,
+                    RouteConfig::LoadBalance { host, .. } => host,
+                    RouteConfig::Websocket { host, .. } => host,
+                };
 
-            let router = if let Some(h) = route_host {
-                host_routers.entry(h.to_lowercase()).or_default()
-            } else {
-                &mut global_router
-            };
+                let router = if let Some(h) = route_host {
+                    host_routers.entry(h.to_lowercase()).or_default()
+                } else {
+                    &mut global_router
+                };
 
-            // Insert exact match
-            if let Err(e) = router.insert(prefix, prefix.clone()) {
-                tracing::error!("Failed to insert route '{}': {}", prefix, e);
-            }
+                // Insert exact match (ignore error if already exists for same prefix in global)
+                let _ = router.insert(prefix, prefix.clone());
 
-            // Insert wildcard match for sub-paths
-            // If prefix is "/", wildcard is "/{*rest}"
-            // If prefix is "/api", wildcard is "/api/{*rest}"
-            let wildcard = if prefix == "/" {
-                "/{*rest}".to_string()
-            } else {
-                format!("{}/{{*rest}}", prefix.trim_end_matches('/'))
-            };
+                // Insert wildcard match for sub-paths
+                // If prefix is "/", wildcard is "/{*rest}"
+                // If prefix is "/api", wildcard is "/api/{*rest}"
+                let wildcard = if prefix == "/" {
+                    "/{*rest}".to_string()
+                } else {
+                    format!("{}/{{*rest}}", prefix.trim_end_matches('/'))
+                };
 
-            if let Err(e) = router.insert(&wildcard, prefix.clone()) {
-                tracing::error!("Failed to insert wildcard route '{}': {}", wildcard, e);
+                let _ = router.insert(&wildcard, prefix.clone());
             }
         }
 
@@ -182,23 +217,30 @@ impl GatewayService {
         &self.backend_health
     }
 
-    /// Get a cloned route-level rate limiter for a given prefix, if configured
+    /// Get a cloned route-level rate limiter for a given prefix and optional host, if configured
     /// Fetch a cloned per‑route rate limiter if present.
-    pub async fn get_rate_limiter(&self, route_prefix: &str) -> Option<RouteRateLimiter> {
+    pub async fn get_rate_limiter(
+        &self,
+        route_prefix: &str,
+        host: Option<&str>,
+    ) -> Option<RouteRateLimiter> {
+        let key = RouteKey::new(route_prefix.to_string(), host.map(|h| h.to_string()));
         self.rate_limiters
-            .get_async(&route_prefix.to_string())
+            .get_async(&key.to_rate_limiter_key())
             .await
             .map(|entry| entry.get().clone())
     }
 
     /// Collect all unique backend target URLs defined in the set of routes.
-    pub fn collect_backends(routes: &StdHashMap<String, RouteConfig>) -> Vec<String> {
+    pub fn collect_backends(routes: &StdHashMap<String, RouteConfigEntry>) -> Vec<String> {
         let mut backends = routes
             .values()
-            .flat_map(|route_config| match route_config {
-                RouteConfig::LoadBalance { targets, .. } => targets.clone(),
-                RouteConfig::Proxy { target, .. } => vec![target.clone()],
-                _ => Vec::new(),
+            .flat_map(|entry| {
+                entry.iter().flat_map(|route_config| match route_config {
+                    RouteConfig::LoadBalance { targets, .. } => targets.clone(),
+                    RouteConfig::Proxy { target, .. } => vec![target.clone()],
+                    _ => Vec::new(),
+                })
             })
             .collect::<Vec<_>>();
 
@@ -221,16 +263,43 @@ impl GatewayService {
             && let Ok(match_) = router.at(path)
         {
             let prefix = match_.value;
-            if let Some(config) = self.config.routes.get(prefix) {
-                return Some((prefix.clone(), config.clone()));
+            if let Some(entry) = self.config.routes.get(prefix) {
+                // Find the route with matching host
+                for route_config in entry.iter() {
+                    let route_host = match route_config {
+                        RouteConfig::Static { host, .. } => host,
+                        RouteConfig::Redirect { host, .. } => host,
+                        RouteConfig::Proxy { host, .. } => host,
+                        RouteConfig::LoadBalance { host, .. } => host,
+                        RouteConfig::Websocket { host, .. } => host,
+                    };
+                    if route_host
+                        .as_ref()
+                        .is_some_and(|h| h.eq_ignore_ascii_case(req_host))
+                    {
+                        return Some((prefix.clone(), route_config.clone()));
+                    }
+                }
             }
         }
 
         // 2. Fallback to global router (routes without host)
         if let Ok(match_) = self.global_router.at(path) {
             let prefix = match_.value;
-            if let Some(config) = self.config.routes.get(prefix) {
-                return Some((prefix.clone(), config.clone()));
+            if let Some(entry) = self.config.routes.get(prefix) {
+                // Find the first route without host (global fallback)
+                for route_config in entry.iter() {
+                    let route_host = match route_config {
+                        RouteConfig::Static { host, .. } => host,
+                        RouteConfig::Redirect { host, .. } => host,
+                        RouteConfig::Proxy { host, .. } => host,
+                        RouteConfig::LoadBalance { host, .. } => host,
+                        RouteConfig::Websocket { host, .. } => host,
+                    };
+                    if route_host.is_none() {
+                        return Some((prefix.clone(), route_config.clone()));
+                    }
+                }
             }
         }
 

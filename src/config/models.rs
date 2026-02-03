@@ -156,6 +156,144 @@ pub struct HeaderCondition {
     pub value_matches: Option<String>, // Regex to match header value
 }
 
+/// Wrapper type that supports both single RouteConfig and array of RouteConfig
+/// This allows TOML configurations like:
+/// ```toml
+/// [routes."/api"]  # Single route
+/// type = "proxy"
+/// target = "http://backend:8080"
+///
+/// [[routes."/"]]  # Multiple routes with same path
+/// type = "proxy"
+/// host = "api.example.com"
+/// target = "http://api-backend:3001"
+///
+/// [[routes."/"]]
+/// type = "proxy"
+/// host = "admin.example.com"
+/// target = "http://admin-backend:3002"
+/// ```
+#[derive(Debug, Clone)]
+pub enum RouteConfigEntry {
+    Single(Box<RouteConfig>),
+    Multiple(Vec<RouteConfig>),
+}
+
+impl RouteConfigEntry {
+    /// Get all routes as a slice
+    pub fn as_slice(&self) -> &[RouteConfig] {
+        match self {
+            RouteConfigEntry::Single(config) => std::slice::from_ref(config.as_ref()),
+            RouteConfigEntry::Multiple(configs) => configs.as_slice(),
+        }
+    }
+
+    /// Get all routes as a mutable slice
+    pub fn as_mut_slice(&mut self) -> &mut [RouteConfig] {
+        match self {
+            RouteConfigEntry::Single(config) => std::slice::from_mut(config.as_mut()),
+            RouteConfigEntry::Multiple(configs) => configs.as_mut_slice(),
+        }
+    }
+
+    /// Get the number of routes in this entry
+    pub fn len(&self) -> usize {
+        match self {
+            RouteConfigEntry::Single(_) => 1,
+            RouteConfigEntry::Multiple(configs) => configs.len(),
+        }
+    }
+
+    /// Check if this entry is empty
+    pub fn is_empty(&self) -> bool {
+        match self {
+            RouteConfigEntry::Single(_) => false,
+            RouteConfigEntry::Multiple(configs) => configs.is_empty(),
+        }
+    }
+
+    /// Iterate over all routes
+    pub fn iter(&self) -> impl Iterator<Item = &RouteConfig> {
+        self.as_slice().iter()
+    }
+}
+
+impl Serialize for RouteConfigEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            RouteConfigEntry::Single(config) => config.as_ref().serialize(serializer),
+            RouteConfigEntry::Multiple(configs) => configs.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RouteConfigEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, SeqAccess, Visitor};
+
+        struct RouteConfigEntryVisitor;
+
+        impl<'de> Visitor<'de> for RouteConfigEntryVisitor {
+            type Value = RouteConfigEntry;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a route configuration or array of route configurations")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut configs = Vec::new();
+                while let Some(config) = seq.next_element()? {
+                    configs.push(config);
+                }
+                if configs.is_empty() {
+                    Err(de::Error::custom(
+                        "route configuration array cannot be empty",
+                    ))
+                } else {
+                    Ok(RouteConfigEntry::Multiple(configs))
+                }
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let config = RouteConfig::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(RouteConfigEntry::Single(Box::new(config)))
+            }
+        }
+
+        deserializer.deserialize_any(RouteConfigEntryVisitor)
+    }
+}
+
+impl From<RouteConfig> for RouteConfigEntry {
+    fn from(config: RouteConfig) -> Self {
+        RouteConfigEntry::Single(Box::new(config))
+    }
+}
+
+impl From<Vec<RouteConfig>> for RouteConfigEntry {
+    fn from(configs: Vec<RouteConfig>) -> Self {
+        if configs.len() == 1 {
+            RouteConfigEntry::Single(Box::new(
+                configs.into_iter().next().expect("vec has one element"),
+            ))
+        } else {
+            RouteConfigEntry::Multiple(configs)
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerConfig {
     pub listen_addr: String,
@@ -163,7 +301,7 @@ pub struct ServerConfig {
     pub host: Option<String>,
     #[serde(default)]
     pub port: Option<u16>,
-    pub routes: HashMap<String, RouteConfig>,
+    pub routes: HashMap<String, RouteConfigEntry>,
     #[serde(default)]
     pub tls: Option<TlsConfig>,
     #[serde(default)]
@@ -208,7 +346,7 @@ pub struct ServerConfigBuilder {
     listen_addr: Option<String>,
     host: Option<String>,
     port: Option<u16>,
-    routes: HashMap<String, RouteConfig>,
+    routes: HashMap<String, RouteConfigEntry>,
     tls: Option<TlsConfig>,
     health_check: Option<HealthCheckConfig>,
     backend_health_paths: HashMap<String, String>,
@@ -243,8 +381,23 @@ impl ServerConfigBuilder {
     }
 
     /// Add a route with the given path prefix and configuration
+    /// If a route already exists for this path, it will be replaced
     pub fn route(mut self, path_prefix: impl Into<String>, config: RouteConfig) -> Self {
-        self.routes.insert(path_prefix.into(), config);
+        self.routes.insert(
+            path_prefix.into(),
+            RouteConfigEntry::Single(Box::new(config)),
+        );
+        self
+    }
+
+    /// Add multiple routes for the same path (for host-based routing)
+    pub fn routes_for_path(
+        mut self,
+        path_prefix: impl Into<String>,
+        configs: Vec<RouteConfig>,
+    ) -> Self {
+        self.routes
+            .insert(path_prefix.into(), RouteConfigEntry::from(configs));
         self
     }
 

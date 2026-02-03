@@ -4,7 +4,7 @@ mod tests {
     use std::sync::Arc;
 
     use axon::{
-        config::models::{RouteConfig, ServerConfig},
+        config::models::{RouteConfig, RouteConfigEntry, ServerConfig},
         core::GatewayService,
     };
 
@@ -17,7 +17,7 @@ mod tests {
         // Add a route with host specified
         config.routes.insert(
             "/api-with-host".to_string(),
-            RouteConfig::Proxy {
+            RouteConfigEntry::Single(Box::new(RouteConfig::Proxy {
                 target: "http://api-backend:3001".to_string(),
                 host: Some("api.example.com".to_string()),
                 path_rewrite: None,
@@ -27,13 +27,13 @@ mod tests {
                 request_body: None,
                 response_body: None,
                 middlewares: vec![],
-            },
+            })),
         );
 
         // Add a default route without host for same path pattern
         config.routes.insert(
             "/api".to_string(),
-            RouteConfig::Proxy {
+            RouteConfigEntry::Single(Box::new(RouteConfig::Proxy {
                 target: "http://default-backend:5000".to_string(),
                 host: None,
                 path_rewrite: None,
@@ -43,7 +43,7 @@ mod tests {
                 request_body: None,
                 response_body: None,
                 middlewares: vec![],
-            },
+            })),
         );
 
         let gateway = GatewayService::new(Arc::new(config));
@@ -86,7 +86,7 @@ mod tests {
 
         config.routes.insert(
             "/".to_string(),
-            RouteConfig::Proxy {
+            RouteConfigEntry::Single(Box::new(RouteConfig::Proxy {
                 target: "http://backend:3000".to_string(),
                 host: Some("Example.Com".to_string()),
                 path_rewrite: None,
@@ -96,7 +96,7 @@ mod tests {
                 request_body: None,
                 response_body: None,
                 middlewares: vec![],
-            },
+            })),
         );
 
         let gateway = GatewayService::new(Arc::new(config));
@@ -127,7 +127,7 @@ mod tests {
         // Longer path with host
         config.routes.insert(
             "/api/v2".to_string(),
-            RouteConfig::Proxy {
+            RouteConfigEntry::Single(Box::new(RouteConfig::Proxy {
                 target: "http://api-v2:3002".to_string(),
                 host: Some("api.example.com".to_string()),
                 path_rewrite: None,
@@ -137,13 +137,13 @@ mod tests {
                 request_body: None,
                 response_body: None,
                 middlewares: vec![],
-            },
+            })),
         );
 
         // Shorter path with same host
         config.routes.insert(
             "/api".to_string(),
-            RouteConfig::Proxy {
+            RouteConfigEntry::Single(Box::new(RouteConfig::Proxy {
                 target: "http://api-v1:3001".to_string(),
                 host: Some("api.example.com".to_string()),
                 path_rewrite: None,
@@ -153,7 +153,7 @@ mod tests {
                 request_body: None,
                 response_body: None,
                 middlewares: vec![],
-            },
+            })),
         );
 
         let gateway = GatewayService::new(Arc::new(config));
