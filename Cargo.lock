@@ -563,9 +563,9 @@ dependencies = [
 
 [[package]]
 name = "boring"
-version = "5.0.0-alpha.2"
+version = "5.0.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f8c6c55389fc3f4aa67c4e56d004bcdc6d488a9ec0a78bff4712f5c4ac7c3fa"
+checksum = "eb7bcd6e0d5ecbc3223e56d0a89c20883888c6b03b37fc7c7c2ec0bca547d652"
 dependencies = [
  "bitflags 2.9.4",
  "boring-sys",
@@ -576,9 +576,9 @@ dependencies = [
 
 [[package]]
 name = "boring-sys"
-version = "5.0.0-alpha.2"
+version = "5.0.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8aa2ab67b92be12331c65cb080fccc6288b0175755243d0485b08c6c0645c30e"
+checksum = "40a727a657435590d1792fdaabe3b8a9b1c088d542e20e26e431248a1737a72c"
 dependencies = [
  "bindgen",
  "cmake",
@@ -615,9 +615,9 @@ checksum = "46c5e41b57b8bba42a04676d81cb89e9ee8e859a1a66f80a5a72e1cb76b34d43"
 
 [[package]]
 name = "bytes"
-version = "1.11.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b35204fbdc0b3f4446b89fc1ac2cf84a8a68971995d0bf2e925ec7cd960f9cb3"
+checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cc"
@@ -685,9 +685,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.56"
+version = "4.5.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a75ca66430e33a14957acc24c5077b503e7d374151b2b4b3a10c83b4ceb4be0e"
+checksum = "6899ea499e3fb9305a65d5ebf6e3d2248c5fab291f300ad0a704fbe142eae31a"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -695,9 +695,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.56"
+version = "4.5.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "793207c7fa6300a0608d1080b858e5fdbe713cdc1c8db9fb17777d8a13e63df0"
+checksum = "7b12c8b680195a62a8364d16b8447b01b6c2c8f9aaf68bee653be34d4245e238"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1111,9 +1111,9 @@ checksum = "52051878f80a721bb68ebfbc930e07b65ba72f2da88968ea5c06fd6ca3d3a127"
 
 [[package]]
 name = "flate2"
-version = "1.1.8"
+version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b375d6465b98090a5f25b1c7703f3859783755aa9a80433b36e0379a3ec2f369"
+checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
@@ -1501,9 +1501,9 @@ checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
 name = "hpx"
-version = "0.1.5"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9975b446c5b1f72b91663b16ebfe7ca2681f286328095a6149a0078f3ec3e89f"
+checksum = "65f7e54a3d33943efc923f9386ceb29f3f4426c1648ff78219cdadf58f15800d"
 dependencies = [
  "ahash",
  "base64",
@@ -2727,9 +2727,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.12.2"
+version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "843bc0191f75f3e22651ae5f1e72939ab2f72a4bc30fa80a066bd66edefc24d4"
+checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -3005,9 +3005,9 @@ dependencies = [
 
 [[package]]
 name = "scc"
-version = "3.5.5"
+version = "3.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ccbc3c0af6257ff8e8b50d4e58974631aeaa2af1ea25c4e1398f7de3a7d7dd3"
+checksum = "e4bd9d1727de391b6982925d830baad51692fa2aa6e337733c03d95121ca2793"
 dependencies = [
  "saa",
  "sdd",
@@ -3473,9 +3473,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-boring"
-version = "5.0.0-alpha.1"
+version = "5.0.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8366b0554ff26810c5a1b282cc6dc65c3f1f3c488f5e5aa310e92c1665defd0"
+checksum = "e2827787b4939b487a5d0eeaee0b7c890b2c5f218790159e9974d2431364ecd7"
 dependencies = [
  "boring",
  "boring-sys",
