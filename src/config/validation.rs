@@ -6,7 +6,8 @@ use eyre::Result;
 use regex::Regex;
 
 use crate::config::models::{
-    LoadBalanceStrategy, RateLimitConfig, RouteConfig, RouteConfigEntry, ServerConfig, TlsConfig,
+    HealthCheckConfig, LoadBalanceStrategy, RateLimitConfig, RouteConfig, RouteConfigEntry,
+    ServerConfig, TlsConfig,
 };
 
 /// Validation result type alias
@@ -60,6 +61,12 @@ impl ServerConfigValidator {
                     }
                 }
             }
+        }
+
+        if let Err(mut health_check_errors) =
+            Self::validate_health_check_config(&config.health_check)
+        {
+            errors.append(&mut health_check_errors);
         }
 
         if let Some(tls_config) = &config.tls {
@@ -375,6 +382,62 @@ impl ServerConfigValidator {
         Ok(())
     }
 
+    fn validate_health_check_config(
+        config: &HealthCheckConfig,
+    ) -> Result<(), Vec<ValidationError>> {
+        if !config.enabled {
+            return Ok(());
+        }
+
+        let mut errors = Vec::new();
+
+        if config.interval_secs == 0 {
+            errors.push(ValidationError::InvalidField {
+                field: "health_check.interval_secs".to_string(),
+                message: "Must be greater than 0 when health checks are enabled".to_string(),
+            });
+        }
+
+        if config.timeout_secs == 0 {
+            errors.push(ValidationError::InvalidField {
+                field: "health_check.timeout_secs".to_string(),
+                message: "Must be greater than 0 when health checks are enabled".to_string(),
+            });
+        }
+
+        if config.unhealthy_threshold == 0 {
+            errors.push(ValidationError::InvalidField {
+                field: "health_check.unhealthy_threshold".to_string(),
+                message: "Must be greater than 0 when health checks are enabled".to_string(),
+            });
+        }
+
+        if config.healthy_threshold == 0 {
+            errors.push(ValidationError::InvalidField {
+                field: "health_check.healthy_threshold".to_string(),
+                message: "Must be greater than 0 when health checks are enabled".to_string(),
+            });
+        }
+
+        if config.path.trim().is_empty() {
+            errors.push(ValidationError::InvalidField {
+                field: "health_check.path".to_string(),
+                message: "Cannot be empty when health checks are enabled".to_string(),
+            });
+        } else if !config.path.starts_with('/') {
+            errors.push(ValidationError::InvalidField {
+                field: "health_check.path".to_string(),
+                message: "Must start with '/' when health checks are enabled".to_string(),
+            });
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
     /// Validate TLS configuration
     fn validate_tls_config(config: &TlsConfig) -> ValidationResult<()> {
         match (&config.cert_path, &config.key_path) {
@@ -394,10 +457,28 @@ impl ServerConfigValidator {
 
                 Ok(())
             }
-            _ => Err(ValidationError::InvalidTls {
-                message: "TLS configuration must specify both certificate and private key paths"
-                    .to_string(),
-            }),
+            _ => {
+                if let Some(acme) = &config.acme {
+                    if acme.domains.is_empty() {
+                        return Err(ValidationError::InvalidTls {
+                            message: "ACME configuration must include at least one domain"
+                                .to_string(),
+                        });
+                    }
+
+                    if acme.email.trim().is_empty() {
+                        return Err(ValidationError::InvalidTls {
+                            message: "ACME configuration must include a contact email".to_string(),
+                        });
+                    }
+
+                    Ok(())
+                } else {
+                    Err(ValidationError::InvalidTls {
+                        message: "TLS configuration must specify either certificate and private key paths, or ACME configuration".to_string(),
+                    })
+                }
+            }
         }
     }
 
@@ -529,5 +610,102 @@ impl ServerConfigValidator {
             message.push_str(&format!("  {}. {}\n", i + 1, error));
         }
         message
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::models::{AcmeConfig, HealthCheckConfig};
+
+    fn minimal_valid_config() -> ServerConfig {
+        ServerConfig {
+            listen_addr: "127.0.0.1:8080".to_string(),
+            routes: [(
+                "/".to_string(),
+                RouteConfig::Proxy {
+                    target: "http://localhost:3000".to_string(),
+                    host: None,
+                    path_rewrite: None,
+                    rate_limit: None,
+                    request_headers: None,
+                    response_headers: None,
+                    request_body: None,
+                    response_body: None,
+                    middlewares: vec![],
+                }
+                .into(),
+            )]
+            .into_iter()
+            .collect(),
+            ..ServerConfig::default()
+        }
+    }
+
+    fn base_config_with_tls(tls: TlsConfig) -> ServerConfig {
+        let mut config = minimal_valid_config();
+        config.tls = Some(tls);
+        config
+    }
+
+    fn make_valid_enabled_health_check() -> HealthCheckConfig {
+        HealthCheckConfig {
+            enabled: true,
+            interval_secs: 10,
+            timeout_secs: 5,
+            path: "/health".to_string(),
+            unhealthy_threshold: 3,
+            healthy_threshold: 2,
+        }
+    }
+
+    #[test]
+    fn validate_accepts_acme_tls_config() {
+        let config = base_config_with_tls(TlsConfig {
+            cert_path: None,
+            key_path: None,
+            acme: Some(AcmeConfig {
+                domains: vec!["example.com".to_string()],
+                email: "admin@example.com".to_string(),
+                cache_dir: ".axon/acme_cache".to_string(),
+                production: false,
+            }),
+        });
+
+        assert!(ServerConfigValidator::validate(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_empty_acme_domains() {
+        let config = base_config_with_tls(TlsConfig {
+            cert_path: None,
+            key_path: None,
+            acme: Some(AcmeConfig {
+                domains: vec![],
+                email: "admin@example.com".to_string(),
+                cache_dir: ".axon/acme_cache".to_string(),
+                production: false,
+            }),
+        });
+
+        assert!(ServerConfigValidator::validate(&config).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_health_check_interval_when_enabled() {
+        let mut config = minimal_valid_config();
+        config.health_check = make_valid_enabled_health_check();
+        config.health_check.interval_secs = 0;
+
+        assert!(ServerConfigValidator::validate(&config).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_health_check_path_when_enabled() {
+        let mut config = minimal_valid_config();
+        config.health_check = make_valid_enabled_health_check();
+        config.health_check.path = "health".to_string();
+
+        assert!(ServerConfigValidator::validate(&config).is_err());
     }
 }

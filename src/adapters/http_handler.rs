@@ -20,7 +20,7 @@ use std::{net::SocketAddr, str::FromStr, sync::Arc, time::Instant};
 use arc_swap::ArcSwap;
 use axum::{
     body::{Body as AxumBody, to_bytes},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
 };
 use eyre::{Result, WrapErr};
 use hyper::{Request, Response};
@@ -72,6 +72,28 @@ impl HttpHandler {
     /// Get the current `GatewayService` (updated after hot reload).
     fn current_gateway(&self) -> Arc<GatewayService> {
         self.gateway_service_holder.load_full()
+    }
+
+    fn extract_raw_host(headers: &HeaderMap) -> Option<String> {
+        headers
+            .get(header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_string)
+    }
+
+    fn extract_routing_host(headers: &HeaderMap) -> Option<String> {
+        Self::extract_raw_host(headers)
+            .map(|host| host.split(':').next().unwrap_or(host.as_str()).to_string())
+    }
+
+    fn find_matching_route_for_request(
+        &self,
+        gateway: &GatewayService,
+        path: &str,
+        headers: &HeaderMap,
+    ) -> Option<(String, RouteConfig)> {
+        let host = Self::extract_routing_host(headers);
+        gateway.find_matching_route(path, host.as_deref())
     }
 
     /// Entry point for Axum – wraps routing with tracing and timing.
@@ -226,18 +248,16 @@ impl HttpHandler {
         // Check if there's a matching route in configuration
         let gateway = self.current_gateway();
 
-        // Extract host from request headers
-        let host = req
-            .headers()
-            .get(header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .map(|h| h.split(':').next().unwrap_or(h)); // Remove port if present
-
-        if let Some((prefix, route_config)) = gateway.find_matching_route(path, host) {
+        let route_host = Self::extract_routing_host(req.headers());
+        if let Some((prefix, route_config)) =
+            gateway.find_matching_route(path, route_host.as_deref())
+        {
             tracing::Span::current().record("route.prefix", &prefix);
 
             // Apply route-level rate limiting if configured
-            if let Some(limiter) = gateway.get_rate_limiter(&prefix, host).await
+            if let Some(limiter) = gateway
+                .get_rate_limiter(&prefix, route_host.as_deref())
+                .await
                 && let Err(resp) = limiter.check(&req)
             {
                 return Ok(*resp);
@@ -478,17 +498,10 @@ impl HttpHandler {
     ) -> Result<Response<AxumBody>, eyre::Error> {
         let path = req.uri().path().to_string();
 
-        // Extract host from request headers
-        let host = req
-            .headers()
-            .get(header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .map(|h| h.split(':').next().unwrap_or(h)); // Remove port if present
-
         // Find the matching static route
         let gateway = self.current_gateway();
         if let Some((_, RouteConfig::Static { root, .. })) =
-            gateway.find_matching_route(&path, host)
+            self.find_matching_route_for_request(&gateway, &path, req.headers())
         {
             // Extract the file path by removing the route prefix
             let file_path = path.strip_prefix(route_prefix).unwrap_or(&path);
@@ -549,16 +562,9 @@ impl HttpHandler {
         // Extract route & config
         let path = req.uri().path().to_string();
 
-        // Extract host from request headers
-        let host = req
-            .headers()
-            .get(header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .map(|h| h.split(':').next().unwrap_or(h)); // Remove port if present
-
         let gateway = self.current_gateway();
-        let (route_prefix, route_config) = gateway
-            .find_matching_route(&path, host)
+        let (route_prefix, route_config) = self
+            .find_matching_route_for_request(&gateway, &path, req.headers())
             .ok_or_else(|| eyre::eyre!("No matching WS route"))?;
         let (
             target,
@@ -854,6 +860,13 @@ impl HttpHandler {
             conn_info.decrement_requests();
         }
 
+        // This registration is per-request (not per-socket), so clean it up after completion.
+        if let Some(conn_info) = connection_info {
+            self.connection_tracker
+                .unregister_connection(conn_info.id)
+                .await;
+        }
+
         result
     }
 
@@ -865,21 +878,12 @@ impl HttpHandler {
     ) -> Result<Response<AxumBody>, eyre::Error> {
         let path = req.uri().path();
 
-        // Extract host from request headers
-        let host_header_value = req
-            .headers()
-            .get(header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .map(|s| s.to_string());
-
-        let host = host_header_value
-            .as_deref()
-            .map(|h| h.split(':').next().unwrap_or(h)); // Remove port if present
+        let host_header_value = Self::extract_raw_host(req.headers());
 
         // Find the matching route configuration
         let gateway = self.current_gateway();
-        let (route_prefix, route_config) = gateway
-            .find_matching_route(path, host)
+        let (route_prefix, route_config) = self
+            .find_matching_route_for_request(&gateway, path, req.headers())
             .ok_or_else(|| eyre::eyre!("No matching route found for path: {}", path))?;
 
         // Get targets and path rewrite from the route configuration

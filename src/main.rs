@@ -14,7 +14,7 @@ use axon::{
     tracing_setup,
     utils::graceful_shutdown::GracefulShutdown,
 };
-use axum::serve::Listener;
+use axum::serve::{Listener, ListenerExt};
 use clap::Parser;
 use color_eyre::{
     Result,
@@ -443,19 +443,21 @@ async fn main() -> Result<()> {
     // Create Axum router with real request handling
     use std::convert::Infallible;
 
-    use axum::{Router, body::Body, extract::Request, response::Response, routing::any};
+    use axum::{
+        Router,
+        body::Body,
+        extract::{ConnectInfo, Request},
+        response::Response,
+        routing::any,
+    };
     use tower_http::compression::CompressionLayer;
 
-    let handler = http_handler.clone();
-    let app = Router::new()
-        .layer(CompressionLayer::new())
-        .route(
-            "/{*path}",
-            any(move |req: Request| {
+    let make_request_route = |handler: Arc<HttpHandler>| {
+        any(
+            move |ConnectInfo(client_addr): ConnectInfo<SocketAddr>, req: Request| {
                 let handler = handler.clone();
                 async move {
-                    // TODO: Restore ConnectInfo<SocketAddr> once trait bounds are fixed
-                    match handler.handle_request(req, None).await {
+                    match handler.handle_request(req, Some(client_addr)).await {
                         Ok(response) => Ok::<Response<Body>, Infallible>(response),
                         Err(e) => {
                             tracing::error!("Request handling error: {:?}", e);
@@ -469,30 +471,14 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-            }),
+            },
         )
-        .route(
-            "/",
-            any(move |req: Request| {
-                let handler = http_handler.clone();
-                async move {
-                    // TODO: Restore ConnectInfo<SocketAddr> once trait bounds are fixed
-                    match handler.handle_request(req, None).await {
-                        Ok(response) => Ok::<Response<Body>, Infallible>(response),
-                        Err(e) => {
-                            tracing::error!("Request handling error: {:?}", e);
-                            let error_response = Response::builder()
-                                .status(500)
-                                .body(Body::from("Internal Server Error"))
-                                .unwrap_or_else(|_| {
-                                    Response::new(Body::from("Internal Server Error"))
-                                });
-                            Ok(error_response)
-                        }
-                    }
-                }
-            }),
-        );
+    };
+
+    let app = Router::new()
+        .layer(CompressionLayer::new())
+        .route("/{*path}", make_request_route(http_handler.clone()))
+        .route("/", make_request_route(http_handler.clone()));
 
     // Log initial routes from the config_holder
     {
@@ -556,10 +542,13 @@ async fn main() -> Result<()> {
                 })
                 .boxed();
 
-            let tls_listener = AxumListener { stream, local_addr };
+            let tls_listener = AxumListener { stream, local_addr }.tap_io(|_io| {});
 
             tokio::select! {
-                result = axum::serve(tls_listener, app.into_make_service()) => {
+                result = axum::serve(
+                    tls_listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                ) => {
                     result.context("Server error")
                 },
                 shutdown_reason = graceful_shutdown.wait_for_shutdown_signal() => {
@@ -582,8 +571,10 @@ async fn main() -> Result<()> {
                 &mut BufReader::new(File::open(key_path).context("failed to open key file")?);
 
             let cert_chain = certs(cert_file).collect::<Result<Vec<_>, _>>()?;
-            let mut keys = pkcs8_private_keys(key_file).collect::<Result<Vec<_>, _>>()?;
-            let key = keys.remove(0);
+            let key = pkcs8_private_keys(key_file)
+                .next()
+                .transpose()?
+                .ok_or_else(|| eyre!("No PKCS#8 private key found in key file"))?;
 
             let config = ServerConfig::builder()
                 .with_no_client_auth()
@@ -596,10 +587,14 @@ async fn main() -> Result<()> {
             let tls_listener = AxumListener {
                 stream: tls_listener_stream,
                 local_addr,
-            };
+            }
+            .tap_io(|_io| {});
 
             tokio::select! {
-                result = axum::serve(tls_listener, app.into_make_service()) => {
+                result = axum::serve(
+                    tls_listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                ) => {
                     result.context("Server error")
                 },
                 shutdown_reason = graceful_shutdown.wait_for_shutdown_signal() => {
@@ -615,7 +610,7 @@ async fn main() -> Result<()> {
         tokio::select! {
             result = axum::serve(
                 listener,
-                app.into_make_service()
+                app.into_make_service_with_connect_info::<SocketAddr>()
             ) => {
                 result.context("Server error")
             },

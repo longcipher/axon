@@ -17,7 +17,7 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 use arc_swap::ArcSwap;
 use axon::{
     adapters::{FileSystemAdapter, HttpClientAdapter, HttpHandler, http3},
-    config::models::{ProtocolConfig, RouteConfig, ServerConfig},
+    config::models::{ProtocolConfig, RouteConfig, RouteConfigEntry, ServerConfig},
     core::GatewayService,
     ports::http_client::HttpClient,
     utils::ConnectionTracker,
@@ -60,7 +60,7 @@ async fn http3_proxy_basic() -> Result<()> {
     let mut routes = HashMap::new();
     routes.insert(
         "/api".to_string(),
-        RouteConfig::Proxy {
+        RouteConfigEntry::Single(Box::new(RouteConfig::Proxy {
             target: format!("http://127.0.0.1:{backend_port}"),
             path_rewrite: None,
             rate_limit: None,
@@ -70,10 +70,12 @@ async fn http3_proxy_basic() -> Result<()> {
             response_body: None,
             middlewares: vec![],
             host: None,
-        },
+        })),
     );
-    let mut protocols = ProtocolConfig::default();
-    protocols.http3_enabled = true;
+    let protocols = ProtocolConfig {
+        http3_enabled: true,
+        ..ProtocolConfig::default()
+    };
     let server_config = ServerConfig {
         listen_addr: format!("127.0.0.1:{h3_port}"),
         routes,

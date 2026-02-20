@@ -10,8 +10,10 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_same_path_different_hosts() {
-        let mut config = ServerConfig::default();
-        config.listen_addr = "127.0.0.1:8080".to_string();
+        let mut config = ServerConfig {
+            listen_addr: "127.0.0.1:8080".to_string(),
+            ..ServerConfig::default()
+        };
 
         // Multiple routes on "/" with different hosts using RouteConfigEntry::Multiple
         config.routes.insert(

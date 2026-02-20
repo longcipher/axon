@@ -74,16 +74,10 @@ impl GatewayService {
 
         let backends = Self::collect_backends(&config.routes);
 
-        // In scc 3.x, need to use async insert with tokio runtime
-        // This is safe to use during initialization since we're in a sync context
         for backend in &backends {
             if let Ok(backend_url) = BackendUrl::new(backend) {
-                let _ = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(
-                        backend_health
-                            .insert_async(backend.clone(), BackendHealth::new(backend_url)),
-                    )
-                });
+                let _ =
+                    backend_health.insert_sync(backend.clone(), BackendHealth::new(backend_url));
             } else {
                 tracing::error!("Invalid backend URL: {}", backend);
             }
@@ -113,11 +107,7 @@ impl GatewayService {
                     let key = RouteKey::new(prefix.clone(), route_host.clone());
                     match RouteRateLimiter::new(rate_cfg) {
                         Ok(limiter) => {
-                            let _ = tokio::task::block_in_place(|| {
-                                tokio::runtime::Handle::current().block_on(
-                                    rate_limiters.insert_async(key.to_rate_limiter_key(), limiter),
-                                )
-                            });
+                            let _ = rate_limiters.insert_sync(key.to_rate_limiter_key(), limiter);
                         }
                         Err(e) => {
                             tracing::error!(

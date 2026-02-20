@@ -116,7 +116,7 @@ async fn handle_connection(quinn_conn: quinn::Connection, handler: Arc<HttpHandl
         let handler_clone = handler.clone();
         tokio::spawn(async move {
             match resolver.resolve_request().await {
-                Ok((req_head, mut req_stream)) => {
+                Ok((req_head, req_stream)) => {
                     let start = Instant::now();
                     use bytes::Bytes;
                     use tokio::sync::mpsc;
@@ -124,7 +124,6 @@ async fn handle_connection(quinn_conn: quinn::Connection, handler: Arc<HttpHandl
 
                     // Channel for streaming request body chunks
                     let (tx, rx) = mpsc::channel::<Result<Bytes, eyre::Report>>(32);
-                    use std::sync::Mutex as StdMutex;
                     let req_stream_shared = Arc::new(tokio::sync::Mutex::new(req_stream));
                     let req_stream_for_body = req_stream_shared.clone();
                     tokio::spawn(async move {
@@ -230,13 +229,12 @@ async fn handle_connection(quinn_conn: quinn::Connection, handler: Arc<HttpHandl
                     while let Some(frame) = resp_body.frame().await {
                         match frame {
                             Ok(f) => {
-                                if let Some(data) = f.data_ref() {
-                                    if !data.is_empty() {
-                                        if let Err(e) = req_stream.send_data(data.clone()).await {
-                                            error!(error=%e, "send h3 response data frame");
-                                            break;
-                                        }
-                                    }
+                                if let Some(data) = f.data_ref()
+                                    && !data.is_empty()
+                                    && let Err(e) = req_stream.send_data(data.clone()).await
+                                {
+                                    error!(error=%e, "send h3 response data frame");
+                                    break;
                                 }
                             }
                             Err(e) => {

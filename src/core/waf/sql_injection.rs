@@ -27,7 +27,7 @@ static SQL_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         Regex::new(r"(?i)\bupdate\b.*\bset\b").expect("valid regex"),
         // Statement termination and comments
         Regex::new(r"(?i);\s*\b(drop|delete|update|insert)\b").expect("valid regex"),
-        Regex::new(r";s*--").expect("valid regex"),
+        Regex::new(r";\s*--").expect("valid regex"),
         Regex::new(r"'--").expect("valid regex"),
         Regex::new(r"--[^\r\n]*$").expect("valid regex"),
         // SQL execution
@@ -194,5 +194,12 @@ mod tests {
         let detector = SqlInjectionDetector::new(true, true);
         let uri: Uri = "/?search=hello&page=1".parse().expect("valid uri");
         assert!(detector.check(&uri, &HeaderMap::new(), None).is_ok());
+    }
+
+    #[test]
+    fn test_sql_injection_statement_termination_comment() {
+        let detector = SqlInjectionDetector::new(true, true);
+        let uri: Uri = "/?q=1;%20--%20comment".parse().expect("valid uri");
+        assert!(detector.check(&uri, &HeaderMap::new(), None).is_err());
     }
 }

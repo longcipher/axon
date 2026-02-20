@@ -11,8 +11,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_host_based_routing_priority() {
         // Create a test config with host-specific and default routes
-        let mut config = ServerConfig::default();
-        config.listen_addr = "127.0.0.1:8080".to_string();
+        let mut config = ServerConfig {
+            listen_addr: "127.0.0.1:8080".to_string(),
+            ..ServerConfig::default()
+        };
 
         // Add a route with host specified
         config.routes.insert(
@@ -81,8 +83,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_host_matching_case_insensitive() {
-        let mut config = ServerConfig::default();
-        config.listen_addr = "127.0.0.1:8080".to_string();
+        let mut config = ServerConfig {
+            listen_addr: "127.0.0.1:8080".to_string(),
+            ..ServerConfig::default()
+        };
 
         config.routes.insert(
             "/".to_string(),
@@ -121,8 +125,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_longest_prefix_with_host() {
-        let mut config = ServerConfig::default();
-        config.listen_addr = "127.0.0.1:8080".to_string();
+        let mut config = ServerConfig {
+            listen_addr: "127.0.0.1:8080".to_string(),
+            ..ServerConfig::default()
+        };
 
         // Longer path with host
         config.routes.insert(
