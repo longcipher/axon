@@ -388,7 +388,7 @@ impl GatewayService {
                 healthy_backends.get(index).cloned()
             }
             crate::config::LoadBalanceStrategy::Random => {
-                use rand::Rng;
+                use rand::RngExt;
                 let index = rand::rng().random_range(0..healthy_backends.len());
                 healthy_backends.get(index).cloned()
             }

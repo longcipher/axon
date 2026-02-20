@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rand::Rng;
+use rand::RngExt;
 
 /// Trait defining the interface for load balancing strategies.
 ///
